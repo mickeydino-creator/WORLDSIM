@@ -93,17 +93,44 @@ export class RealtimeHub {
     if (ids.length === 0) return;
     try {
       const r = await getPool().query<EventRow>('SELECT id, channel, type, payload, created_at FROM world_events WHERE id = ANY($1) ORDER BY id', [ids]);
-      for (const e of r.rows) this.dispatch(e);
+      for (const e of r.rows) await this.dispatch(e);
     } catch (err) {
       reportError(err, { where: 'realtime flush' });
     }
   }
 
-  private dispatch(e: EventRow) {
+  // Settlement channels are re-authorised on delivery (cached briefly) so removed members stop
+  // receiving events even if their socket stays open.
+  private membership = new Map<string, { ok: boolean; at: number }>();
+
+  private async isMember(settlementId: string, userId: string): Promise<boolean> {
+    const key = `${settlementId}:${userId}`;
+    const hit = this.membership.get(key);
+    if (hit && Date.now() - hit.at < 30_000) return hit.ok;
+    const r = await getPool().query('SELECT 1 FROM settlement_members WHERE settlement_id = $1 AND user_id = $2', [settlementId, userId]);
+    const ok = (r.rowCount ?? 0) > 0;
+    this.membership.set(key, { ok, at: Date.now() });
+    if (this.membership.size > 20_000) this.membership.clear();
+    return ok;
+  }
+
+  private async dispatch(e: EventRow) {
     const subs = this.byChannel.get(e.channel);
     if (!subs) return;
     const msg = JSON.stringify({ type: 'event', id: e.id, channel: e.channel, event: e.type, payload: e.payload, at: e.created_at });
-    for (const c of subs) if (c.ws.readyState === c.ws.OPEN) c.ws.send(msg);
+    const settlementId = e.channel.startsWith('settlement:') ? e.channel.slice('settlement:'.length) : null;
+    if (settlementId && e.type === 'activity') {
+      // Membership changes invalidate cached authorisations for this settlement.
+      for (const k of this.membership.keys()) if (k.startsWith(`${settlementId}:`)) this.membership.delete(k);
+    }
+    for (const c of [...subs]) {
+      if (c.ws.readyState !== c.ws.OPEN) continue;
+      if (settlementId && !(await this.isMember(settlementId, c.user.id))) {
+        this.unsubscribe(c, e.channel);
+        continue;
+      }
+      c.ws.send(msg);
+    }
   }
 
   private send(c: Client, msg: unknown) {

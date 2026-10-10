@@ -129,6 +129,30 @@ describe('realtime multiplayer', () => {
     again.ws.close();
   });
 
+  it('stops delivering settlement events to removed members', async () => {
+    const { getPool } = await import('@/server/db');
+    const founder = await registerUser();
+    const member = await registerUser();
+    const s = await getPool().query<{ id: string }>(
+      `INSERT INTO settlements (name, founder_user_id, center, governance) VALUES ($1, $2, ST_SetSRID(ST_MakePoint(0,0),4326), '{}') RETURNING id`,
+      [`S${member.username}`, founder.id],
+    );
+    const sid = s.rows[0].id;
+    await getPool().query("INSERT INTO settlement_members (settlement_id, user_id, role) VALUES ($1,$2,'founder'),($1,$3,'member')", [sid, founder.id, member.id]);
+    const c = await connect(member);
+    c.ws.send(JSON.stringify({ type: 'subscribe', channels: [`settlement:${sid}`] }));
+    expect((await c.waitFor((m) => m.type === 'subscribed')).channels).toEqual([`settlement:${sid}`]);
+    const { withTx } = await import('@/server/db');
+    const { publish } = await import('@/server/events');
+    await withTx((tx) => publish(tx, `settlement:${sid}`, 'vote', { n: 1 }));
+    await c.waitFor((m) => m.type === 'event' && m.payload.n === 1);
+    await getPool().query('DELETE FROM settlement_members WHERE user_id = $1', [member.id]);
+    await withTx((tx) => publish(tx, `settlement:${sid}`, 'activity', { n: 2 }));
+    await new Promise((r) => setTimeout(r, 400));
+    expect(c.messages.some((m) => m.type === 'event' && m.payload.n === 2)).toBe(false);
+    c.ws.close();
+  });
+
   it('tracks transient presence per chunk', async () => {
     const a = await registerUser();
     const b = await registerUser();

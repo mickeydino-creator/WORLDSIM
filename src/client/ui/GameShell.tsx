@@ -64,7 +64,7 @@ export default function GameShell() {
       <TopBar />
       <NavRail />
       <aside
-        className="panel scroll-thin absolute bottom-3 right-3 top-[64px] z-20 w-[min(400px,calc(100vw-80px))] overflow-y-auto rounded-xl max-sm:bottom-[64px] max-sm:left-3 max-sm:top-auto max-sm:h-[45vh] max-sm:w-auto"
+        className="panel scroll-thin absolute bottom-3 right-3 top-[64px] z-20 w-[min(400px,calc(100vw-80px))] overflow-y-auto rounded-xl max-sm:bottom-[88px] max-sm:left-3 max-sm:top-auto max-sm:h-[45vh] max-sm:w-auto"
         aria-label={`${panel} panel`}
         data-testid={`panel-${panel}`}
       >
