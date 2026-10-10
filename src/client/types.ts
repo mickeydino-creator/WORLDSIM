@@ -38,7 +38,7 @@ export interface BuildingSummary {
   settlementId: string | null;
 }
 
-export interface ParcelOwner { id: string; ownerId: string | null; ownerName: string | null; settlementId: string | null; settlementName: string | null }
+export interface ParcelOwner { id: string; name?: string | null; ownerId: string | null; ownerName: string | null; settlementId: string | null; settlementName: string | null; listingPrice?: number | null }
 
 export interface Chunk {
   key: string;

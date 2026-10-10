@@ -7,6 +7,7 @@ import { distanceMeters } from '@/shared/geo';
 import ParcelDetails from './ParcelDetails';
 import BuildingDetails from './BuildingDetails';
 import { Badge, Empty, Section } from './common';
+import { LandForSale, MyLandList } from './Lands';
 
 // Curated starting regions (any location on Earth can be reached by panning/zooming).
 const REGIONS: { name: string; lng: number; lat: number }[] = [
@@ -36,7 +37,7 @@ function NearbyParcels() {
     <ul className="space-y-1" data-testid="nearby-list">
       {list.map((p) => {
         const mine = p.owner?.ownerId === me?.id;
-        const status = p.cls === 'restricted' ? 'Restricted' : p.owner?.settlementId ? p.owner.settlementName : p.owner ? (mine ? 'Yours' : p.owner.ownerName) : 'Available';
+        const status = p.cls === 'restricted' ? 'Restricted' : p.owner?.settlementId ? p.owner.settlementName : p.owner ? (mine ? 'Yours' : p.owner.listingPrice ? 'For sale' : p.owner.ownerName) : 'Available';
         return (
           <li key={p.id}>
             <button
@@ -44,10 +45,10 @@ function NearbyParcels() {
               className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm hover:bg-ink-800"
               data-testid={`parcel-${p.id}`}
             >
-              <span className="font-mono text-xs text-fog-300">#{p.id}</span>
+              <span className="truncate text-xs text-fog-300">{p.owner?.name ?? <span className="font-mono">#{p.id}</span>}</span>
               <span className="flex items-center gap-2">
                 <span className="text-xs text-fog-400">{Math.round(p.d)} m · {LAND_CLASSES[p.cls].name}</span>
-                <Badge tone={status === 'Available' ? 'accent' : mine ? 'accent' : p.owner?.settlementId ? 'violet' : p.cls === 'restricted' ? 'danger' : 'neutral'}>{status}</Badge>
+                <Badge tone={status === 'Available' ? 'accent' : status === 'For sale' ? 'warn' : mine ? 'accent' : p.owner?.settlementId ? 'violet' : p.cls === 'restricted' ? 'danger' : 'neutral'}>{status}</Badge>
               </span>
             </button>
           </li>
@@ -91,14 +92,17 @@ export default function WorldPanel() {
           </ol>
         </Section>
       )}
+      <Section title="My land">
+        <MyLandList />
+      </Section>
+      <Section title="Land for sale">
+        <LandForSale />
+      </Section>
       <Section title="Nearby parcels">
         <NearbyParcels />
       </Section>
       <Section title="Regions">
         <div className="grid grid-cols-1 gap-1">
-          {me.home && (
-            <button onClick={() => flyTo(me.home![0], me.home![1], 16.5)} className="rounded-md px-2 py-1.5 text-left text-sm text-accent hover:bg-ink-800">↩ My land</button>
-          )}
           {REGIONS.map((r) => (
             <button key={r.name} onClick={() => flyTo(r.lng, r.lat, 16)} className="rounded-md px-2 py-1.5 text-left text-sm text-fog-200 hover:bg-ink-800" data-testid={`region-${r.name.split(',')[0].replace(/\s/g, '-')}`}>
               {r.name}

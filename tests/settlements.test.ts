@@ -28,7 +28,7 @@ const second = parcelIdAt(...metersToLngLat([hx, hy], 120, 0));
 async function founder() {
   const f = await registerUser();
   await setLevel(f.id, 3);
-  expect((await call(purchase.POST, { user: f, params: { id: home } })).status).toBe(200);
+  expect((await call(purchase.POST, { body: { name: 'Test land' }, user: f, params: { id: home } })).status).toBe(200);
   const s = await call(settlements.POST, { user: f, body: { name: `Town ${f.username}`, description: 'test', parcelId: home } });
   expect(s.status, JSON.stringify(s.error)).toBe(200);
   return { f, sid: s.data.id as string };
@@ -156,7 +156,7 @@ describe('settlements', () => {
     const { f, sid } = await founder();
     const m = await join(sid, f);
     await setLevel(m.id, 3);
-    expect((await call(purchase.POST, { user: m, params: { id: second } })).status).toBe(200);
+    expect((await call(purchase.POST, { body: { name: 'Test land' }, user: m, params: { id: second } })).status).toBe(200);
     expect((await call(donate.POST, { user: m, params: { id: sid }, body: { parcelId: second } })).status).toBe(200);
     const [sx, sy] = parcelCenter(second);
     const denied = await call(build.POST, { user: m, body: { type: 'park', parcelId: second, lng: sx, lat: sy, rotation: 0 } });
@@ -183,7 +183,7 @@ describe('research', () => {
   it('unlocks technologies that gate real functionality', async () => {
     const u = await registerUser();
     await setLevel(u.id, 3);
-    expect((await call(purchase.POST, { user: u, params: { id: home } })).status).toBe(200);
+    expect((await call(purchase.POST, { body: { name: 'Test land' }, user: u, params: { id: home } })).status).toBe(200);
     const body = { type: 'restaurant', parcelId: home, lng: hx, lat: hy, rotation: 0 };
     expect((await call(build.POST, { user: u, body })).error?.code).toBe('requirements_not_met');
     expect((await call(research.POST, { user: u, params: { techId: 'retail_networks' } })).error?.code).toBe('requirements_not_met'); // prereq

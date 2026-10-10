@@ -6,6 +6,7 @@ import { xpForLevel } from '@/shared/config/progression';
 import type { Inventory } from '../types';
 import { Credits, useApi } from './common';
 import NotificationsButton from './Notifications';
+import { TeleportMenu } from './Lands';
 
 export default function TopBar() {
   const me = game.use((s) => s.me)!;
@@ -46,6 +47,7 @@ export default function TopBar() {
           <span className={`h-2 w-2 rounded-full ${connection === 'online' ? 'bg-accent' : connection === 'connecting' ? 'bg-warn pulse-soft' : 'bg-danger'}`} />
           {connection === 'online' ? `${online} online` : connection === 'connecting' ? 'Connecting' : 'Offline – reconnecting'}
         </span>
+        <TeleportMenu />
         <NotificationsButton />
       </div>
     </header>

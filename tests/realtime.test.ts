@@ -85,7 +85,7 @@ describe('realtime multiplayer', () => {
     await obs.waitFor((m) => m.type === 'subscribed');
     const obsBalance = await balance(observer.id);
 
-    expect((await call(purchase.POST, { user: builder, params: { id: pid } })).status).toBe(200);
+    expect((await call(purchase.POST, { body: { name: 'Test land' }, user: builder, params: { id: pid } })).status).toBe(200);
     const parcelEvt = await obs.waitFor((m) => m.type === 'event' && m.event === 'parcel');
     expect(parcelEvt.payload).toMatchObject({ id: pid, ownerId: builder.id });
 
@@ -117,7 +117,7 @@ describe('realtime multiplayer', () => {
     const hello = await first.waitFor((m) => m.type === 'hello');
     first.ws.close();
     // Changes happen while b is offline.
-    expect((await call(purchase.POST, { user: a, params: { id: pid } })).status).toBe(200);
+    expect((await call(purchase.POST, { body: { name: 'Test land' }, user: a, params: { id: pid } })).status).toBe(200);
     expect((await call(build.POST, { user: a, body: { type: 'park', parcelId: pid, lng: cx, lat: cy, rotation: 0 } })).status).toBe(200);
     const again = await connect(b);
     again.ws.send(JSON.stringify({ type: 'subscribe', channels: [`chunk:${chunk}`] }));

@@ -17,7 +17,7 @@ const [cx, cy] = parcelCenter(pid);
 
 async function owner(): Promise<TestUser> {
   const u = await registerUser();
-  expect((await call(purchase.POST, { user: u, params: { id: pid } })).status).toBe(200);
+  expect((await call(purchase.POST, { body: { name: 'Test land' }, user: u, params: { id: pid } })).status).toBe(200);
   return u;
 }
 
@@ -79,7 +79,7 @@ describe('construction', () => {
     const apt = await call(build.POST, { user: u, body: { type: 'apartment_building', parcelId: pid, lng: cx, lat: cy, rotation: 0 } });
     expect(apt.error?.code).toBe('requirements_not_met');
     const urban = parcelIdAt(34.7818, 32.0853);
-    expect((await call(purchase.POST, { user: u, params: { id: urban } })).status).toBe(200);
+    expect((await call(purchase.POST, { body: { name: 'Test land' }, user: u, params: { id: urban } })).status).toBe(200);
     const [ux, uy] = parcelCenter(urban);
     const farm = await call(build.POST, { user: u, body: { type: 'farm', parcelId: urban, lng: ux, lat: uy, rotation: 0 } });
     expect(farm.error?.code).toBe('requirements_not_met');

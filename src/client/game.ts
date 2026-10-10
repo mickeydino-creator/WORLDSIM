@@ -24,7 +24,7 @@ export interface GameState {
   mapStatus: 'loading' | 'ready' | 'fallback';
   /** Bumped when server-side data relevant to open panels changed (wallet, inventory, settlements...). */
   dataVersion: Record<string, number>;
-  flyTo: { lng: number; lat: number; zoom?: number; seq: number } | null;
+  flyTo: { lng: number; lat: number; zoom?: number; instant?: boolean; seq: number } | null;
 }
 
 export const game = createStore<GameState>({
@@ -62,8 +62,13 @@ export function bump(...keys: string[]) {
   });
 }
 
-export function flyTo(lng: number, lat: number, zoom?: number) {
-  game.set((s) => ({ flyTo: { lng, lat, zoom, seq: (s.flyTo?.seq ?? 0) + 1 } }));
+export function flyTo(lng: number, lat: number, zoom?: number, instant = false) {
+  game.set((s) => ({ flyTo: { lng, lat, zoom, instant, seq: (s.flyTo?.seq ?? 0) + 1 } }));
+}
+
+/** Instantly moves the camera to a location (no flight animation). */
+export function teleport(lng: number, lat: number, zoom = 17) {
+  flyTo(lng, lat, zoom, true);
 }
 
 export async function refreshMe() {

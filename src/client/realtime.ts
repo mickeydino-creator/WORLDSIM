@@ -147,6 +147,7 @@ class RealtimeClient {
       }
       return;
     }
+    if (kind === 'global' && e.event === 'listings') bump('listings');
     if (kind === 'settlement') bump('settlement');
     if (kind === 'market') bump('market');
   }

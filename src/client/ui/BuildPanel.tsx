@@ -28,7 +28,7 @@ export default function BuildPanel() {
   const [cat, setCat] = useState<BuildingCategory | 'all'>('all');
   const inv = useApi<{ inventory: Inventory }>('/api/economy', ['inventory', 'wallet']);
   const mine = useApi<{ buildings: { type: string }[] }>('/api/buildings/mine', ['inventory']);
-  const parcels = useApi<{ parcels: { id: string; lng: number; lat: number; landClass: string; buildings: number }[] }>('/api/parcels/mine', ['wallet']);
+  const parcels = useApi<{ parcels: { id: string; name: string | null; lng: number; lat: number; landClass: string; buildings: number }[] }>('/api/parcels/mine', ['wallet']);
   const owned: Record<string, number> = {};
   for (const b of mine.data?.buildings ?? []) owned[b.type] = (owned[b.type] ?? 0) + 1;
 
@@ -43,7 +43,7 @@ export default function BuildPanel() {
           {parcels.data?.parcels.map((p) => (
             <li key={p.id}>
               <button onClick={() => { flyTo(p.lng, p.lat, 17.5); game.set({ selection: { kind: 'parcel', id: p.id } }); }} className="flex w-full justify-between rounded-md px-2 py-1.5 text-sm hover:bg-ink-800" data-testid={`my-parcel-${p.id}`}>
-                <span className="font-mono text-xs text-fog-300">#{p.id}</span>
+                <span className="text-xs text-fog-200">{p.name ?? `#${p.id}`}</span>
                 <span className="text-xs text-fog-400">{LAND_CLASSES[p.landClass as keyof typeof LAND_CLASSES]?.name} · {p.buildings} structures</span>
               </button>
             </li>

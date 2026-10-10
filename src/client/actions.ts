@@ -17,14 +17,14 @@ export async function run<T>(fn: () => Promise<T>, success?: string | ((r: T) =>
   }
 }
 
-export async function purchaseParcel(parcelId: string, quotedPrice: number | null) {
+export async function purchaseParcel(parcelId: string, quotedPrice: number | null, name: string) {
   const r = await run(
-    () => apiPost<{ parcelId: string; price: number }>(`/api/parcels/${parcelId}/purchase`, quotedPrice ? { maxPrice: quotedPrice } : {}),
-    (x) => `Parcel purchased for ${formatCredits(x.price)}`,
+    () => apiPost<{ parcelId: string; price: number; name: string }>(`/api/parcels/${parcelId}/purchase`, quotedPrice ? { name, maxPrice: quotedPrice } : { name }),
+    (x) => `“${x.name}” purchased for ${formatCredits(x.price)}`,
   );
   if (r) {
     const me = game.get().me;
-    if (me) applyParcelEvent(chunkOfParcel(parcelId), { id: parcelId, ownerId: me.id, ownerName: me.displayName, settlementId: null, settlementName: null });
+    if (me) applyParcelEvent(chunkOfParcel(parcelId), { id: parcelId, name: r.name, ownerId: me.id, ownerName: me.displayName, settlementId: null, settlementName: null });
     await refreshMe();
     bump('selection', 'wallet');
   }
@@ -78,5 +78,46 @@ export async function setAutoRepeat(id: string, autoRepeat: boolean) {
 export async function grantPermission(parcelId: string, username: string, grant: boolean) {
   const r = await run(() => apiPost(`/api/parcels/${parcelId}/permissions`, { username, grant }), grant ? `${username} may now build here` : `Permission revoked for ${username}`);
   if (r) bump('selection');
+  return r;
+}
+
+async function afterLandChange() {
+  bump('selection', 'wallet', 'listings', 'inventory');
+  await refreshMe();
+}
+
+export async function renameParcel(parcelId: string, name: string) {
+  const r = await run(() => apiPost<{ name: string }>(`/api/parcels/${parcelId}/rename`, { name }), (x) => `Renamed to “${x.name}”`);
+  if (r) await afterLandChange();
+  return r;
+}
+
+export async function sellParcelToOffice(parcelId: string) {
+  const r = await run(
+    () => apiPost<{ received: number; removedBuildings: number }>(`/api/parcels/${parcelId}/sell`),
+    (x) => `Sold to the land office for ${formatCredits(x.received)}${x.removedBuildings ? ` (including ${x.removedBuildings} building${x.removedBuildings > 1 ? 's' : ''})` : ''}`,
+  );
+  if (r) await afterLandChange();
+  return r;
+}
+
+export async function listParcel(parcelId: string, price: number) {
+  const r = await run(() => apiPost<{ price: number }>(`/api/parcels/${parcelId}/listing`, { price }), (x) => `Listed for sale at ${formatCredits(x.price)}`);
+  if (r) await afterLandChange();
+  return r;
+}
+
+export async function cancelParcelListing(parcelId: string) {
+  const r = await run(() => apiPost(`/api/parcels/${parcelId}/listing/cancel`), 'Listing removed');
+  if (r) await afterLandChange();
+  return r;
+}
+
+export async function buyListedParcel(parcelId: string, price: number, name: string) {
+  const r = await run(
+    () => apiPost<{ price: number; buildings: number; name: string }>(`/api/parcels/${parcelId}/buy-listing`, { name, maxPrice: price }),
+    (x) => `Bought “${x.name}” for ${formatCredits(x.price)}${x.buildings ? ` with ${x.buildings} building${x.buildings > 1 ? 's' : ''}` : ''}`,
+  );
+  if (r) await afterLandChange();
   return r;
 }

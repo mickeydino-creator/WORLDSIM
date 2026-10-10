@@ -11,9 +11,12 @@ test('register → buy parcel → build → reload → another player sees the s
   const available = page.getByTestId('nearby-list').locator('button', { hasText: 'Available' }).first();
   const parcelLabel = (await available.locator('span').first().innerText()).replace('#', '');
   await available.click();
+  // A name is required before buying.
+  await expect(page.getByTestId('buy-parcel')).toBeDisabled();
+  await page.getByTestId('parcel-name').fill('Pampas Homestead');
   await expect(page.getByTestId('buy-parcel')).toBeEnabled();
   await page.getByTestId('buy-parcel').click();
-  await expect(page.getByText(/Parcel purchased for/)).toBeVisible();
+  await expect(page.getByText(/“Pampas Homestead” purchased for/)).toBeVisible();
   await expect(page.getByTestId('balance')).not.toHaveText(startBalance);
 
   // Build: open the parcel in Build, place a small house with keyboard controls at the map centre.
@@ -46,6 +49,7 @@ test('register → buy parcel → build → reload → another player sees the s
   await expect.poll(() => gameState<boolean>(page2, `(s) => [...s.chunks.values()].some((c) => c.buildings.some((x) => x.id === '${buildingId}'))`), { timeout: 30_000 }).toBe(true);
   await page2.getByTestId(`parcel-${parcelLabel}`).click();
   await expect(page2.getByText(/Owned by Player/)).toBeVisible();
+  await expect(page2.getByText('Pampas Homestead').first()).toBeVisible();
 
   // Realtime: player 1 builds again while player 2 watches; it appears for player 2 without reloading.
   await page.getByTestId('nav-build').click();

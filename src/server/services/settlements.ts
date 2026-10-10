@@ -39,7 +39,7 @@ async function requirePermission(tx: Tx, settlementId: string, userId: string, p
 }
 
 async function lockSettlement(tx: Tx, settlementId: string) {
-  const r = await tx.query<{ id: string; name: string; founder_user_id: string; governance: Governance }>('SELECT id, name, founder_user_id, governance FROM settlements WHERE id = $1 FOR UPDATE', [settlementId]);
+  const r = await tx.query<{ id: string; name: string; founder_user_id: string; governance: Governance }>('SELECT id, name, founder_user_id, governance FROM settlements WHERE id = $1 AND dissolved_at IS NULL FOR UPDATE', [settlementId]);
   if (!r.rows[0]) fail('not_found', 'Settlement not found');
   return r.rows[0];
 }
@@ -70,7 +70,7 @@ export async function createSettlement(tx: Tx, userId: string, input: { name: st
   const p = await tx.query<{ level: number; home_lng: number | null; home_lat: number | null }>('SELECT level, home_lng, home_lat FROM players WHERE user_id = $1 FOR UPDATE', [userId]);
   if (p.rows[0].level < SETTLEMENT_MIN_LEVEL) fail('requirements_not_met', `Founding a settlement requires level ${SETTLEMENT_MIN_LEVEL}`);
   if (await tx.query('SELECT 1 FROM settlement_members WHERE user_id = $1', [userId]).then((r) => r.rowCount)) fail('conflict', 'Leave your current settlement first');
-  const dup = await tx.query('SELECT 1 FROM settlements WHERE lower(name) = lower($1)', [input.name]);
+  const dup = await tx.query('SELECT 1 FROM settlements WHERE lower(name) = lower($1) AND dissolved_at IS NULL', [input.name]);
   if (dup.rowCount) fail('conflict', 'A settlement with that name already exists');
 
   let center: [number, number] | null = p.rows[0].home_lng != null ? [p.rows[0].home_lng, p.rows[0].home_lat!] : null;
@@ -93,7 +93,10 @@ export async function createSettlement(tx: Tx, userId: string, input: { name: st
     from: await playerAccountId(tx, userId), to: treasury.rows[0].id, amount: SETTLEMENT_FOUNDING_COST, type: 'settlement_founding',
     idempotencyKey: `${opKey}:found`, refs: { actorUserId: userId, settlementId: sid }, insufficientMessage: 'Insufficient funds to found a settlement',
   });
-  if (input.parcelId) await moveParcelToSettlement(tx, input.parcelId, userId, sid, 'founding_grant');
+  if (input.parcelId) {
+    await tx.query('DELETE FROM parcel_listings WHERE parcel_id = $1', [input.parcelId]);
+    await moveParcelToSettlement(tx, input.parcelId, userId, sid, 'founding_grant');
+  }
   await activity(tx, sid, userId, 'founded', { name: input.name });
   await audit(tx, userId, 'settlement.create', 'settlement', sid, { name: input.name });
   await addXp(tx, userId, XP.settlementFounded);
@@ -123,6 +126,7 @@ export async function listSettlements(db: Db, near?: { lng: number; lat: number 
             (SELECT count(*)::int FROM settlement_projects p WHERE p.settlement_id = s.id AND p.status = 'completed') AS "completedProjects",
             CASE WHEN $1::float8 IS NULL THEN NULL ELSE ST_Distance(s.center::geography, ST_SetSRID(ST_MakePoint($1,$2),4326)::geography) END AS "distanceM"
        FROM settlements s JOIN users u ON u.id = s.founder_user_id
+      WHERE s.dissolved_at IS NULL
       ORDER BY CASE WHEN $1::float8 IS NULL THEN 0 ELSE ST_Distance(s.center::geography, ST_SetSRID(ST_MakePoint($1,$2),4326)::geography) END,
                s.created_at DESC
       LIMIT 50`,
@@ -135,7 +139,7 @@ export async function getSettlement(db: Db, settlementId: string, viewerId: stri
   const s = await db.query(
     `SELECT s.id, s.name, s.description, s.founder_user_id AS "founderId", s.governance, s.created_at AS "createdAt",
             ST_X(s.center) AS lng, ST_Y(s.center) AS lat, a.balance AS treasury
-       FROM settlements s JOIN accounts a ON a.settlement_id = s.id WHERE s.id = $1`,
+       FROM settlements s JOIN accounts a ON a.settlement_id = s.id WHERE s.id = $1 AND s.dissolved_at IS NULL`,
     [settlementId],
   );
   if (!s.rows[0]) fail('not_found', 'Settlement not found');
@@ -325,6 +329,7 @@ export async function donateParcel(tx: Tx, userId: string, settlementId: string,
   const b = await tx.query('SELECT 1 FROM buildings WHERE parcel_id = $1', [parcelId]);
   if (b.rowCount) fail('requirements_not_met', 'Only empty parcels can be donated');
   await tx.query('DELETE FROM parcel_permissions WHERE parcel_id = $1', [parcelId]);
+  await tx.query('DELETE FROM parcel_listings WHERE parcel_id = $1', [parcelId]);
   await moveParcelToSettlement(tx, parcelId, userId, settlementId, 'donation');
   await activity(tx, settlementId, userId, 'parcel_donated', { parcelId });
   return { parcelId, settlementId };
@@ -513,10 +518,8 @@ async function tryCompleteProject(tx: Tx, projectId: string): Promise<boolean> {
   }
 }
 
-export async function cancelProject(tx: Tx, actorId: string, projectId: string) {
-  const pr = await lockProject(tx, projectId);
-  await requirePermission(tx, pr.settlement_id, actorId, 'approve_spending');
-  if (pr.status !== 'active' && pr.status !== 'blocked') fail('conflict', `Project is ${pr.status}`);
+/** Returns every contribution of a project (credits from escrow, resources to inventories) and cancels it. */
+async function refundProject(tx: Tx, projectId: string, settlementId: string) {
   const escrow = await systemAccountId(tx, 'project_escrow');
   const contribs = await tx.query<{ id: number; user_id: string; source: string; kind: string; resource: string | null; amount: number }>(
     'SELECT id, user_id, source, kind, resource, amount FROM project_contributions WHERE project_id = $1 ORDER BY id',
@@ -524,8 +527,8 @@ export async function cancelProject(tx: Tx, actorId: string, projectId: string) 
   );
   for (const c of contribs.rows) {
     if (c.kind === 'currency') {
-      const to = c.source === 'treasury' ? await settlementAccountId(tx, pr.settlement_id) : await playerAccountId(tx, c.user_id);
-      await transfer(tx, { from: escrow, to, amount: c.amount, type: 'project_refund', idempotencyKey: `project_refund:${c.id}`, refs: { projectId, settlementId: pr.settlement_id } });
+      const to = c.source === 'treasury' ? await settlementAccountId(tx, settlementId) : await playerAccountId(tx, c.user_id);
+      await transfer(tx, { from: escrow, to, amount: c.amount, type: 'project_refund', idempotencyKey: `project_refund:${c.id}`, refs: { projectId, settlementId } });
       if (c.source === 'player') await publishWallet(tx, c.user_id);
     } else if (c.resource) {
       await addResources(tx, c.user_id, { [c.resource]: c.amount }, { ignoreCapacity: true });
@@ -533,9 +536,77 @@ export async function cancelProject(tx: Tx, actorId: string, projectId: string) 
     }
   }
   await tx.query("UPDATE settlement_projects SET status = 'cancelled' WHERE id = $1", [projectId]);
+  return contribs.rowCount ?? 0;
+}
+
+export async function cancelProject(tx: Tx, actorId: string, projectId: string) {
+  const pr = await lockProject(tx, projectId);
+  await requirePermission(tx, pr.settlement_id, actorId, 'approve_spending');
+  if (pr.status !== 'active' && pr.status !== 'blocked') fail('conflict', `Project is ${pr.status}`);
+  const refunded = await refundProject(tx, projectId, pr.settlement_id);
   await activity(tx, pr.settlement_id, actorId, 'project_cancelled', { projectId, name: pr.name });
   await audit(tx, actorId, 'settlement.cancel_project', 'project', projectId, {});
-  return { projectId, status: 'cancelled', refunded: contribs.rowCount };
+  return { projectId, status: 'cancelled', refunded };
+}
+
+/**
+ * Founder-only. Refunds unfinished projects, closes open votes, splits the treasury equally among
+ * members (remainder to the founder), hands settlement land and buildings to the founder, and
+ * removes all members. The record is kept (marked dissolved) because the ledger references it.
+ */
+export async function dissolveSettlement(tx: Tx, actorId: string, settlementId: string, confirmName: string) {
+  const s = await lockSettlement(tx, settlementId);
+  if (s.founder_user_id !== actorId) fail('forbidden', 'Only the founder can dissolve the settlement');
+  if (confirmName.trim().toLowerCase() !== s.name.toLowerCase()) fail('invalid_input', 'Type the settlement name exactly to confirm');
+
+  const projects = await tx.query<{ id: string }>("SELECT id FROM settlement_projects WHERE settlement_id = $1 AND status IN ('active','blocked') FOR UPDATE", [settlementId]);
+  for (const p of projects.rows) await refundProject(tx, p.id, settlementId);
+  await tx.query(
+    `UPDATE proposals SET status = 'rejected', finalized_at = now(), result = '{"note":"Settlement dissolved"}'
+      WHERE settlement_id = $1 AND status = 'open'`,
+    [settlementId],
+  );
+  await tx.query("UPDATE settlement_invites SET status = 'revoked', responded_at = now() WHERE settlement_id = $1 AND status = 'pending'", [settlementId]);
+
+  const members = (await memberIds(tx, settlementId)).sort();
+  const treasury = await settlementAccountId(tx, settlementId);
+  const bal = (await tx.query<{ balance: number }>('SELECT balance FROM accounts WHERE id = $1', [treasury])).rows[0].balance;
+  const share = Math.floor(bal / members.length);
+  const payouts = new Map(members.map((m) => [m, share]));
+  payouts.set(actorId, (payouts.get(actorId) ?? 0) + (bal - share * members.length));
+  for (const [uid, amount] of payouts) {
+    if (amount <= 0) continue;
+    await transfer(tx, {
+      from: treasury, to: await playerAccountId(tx, uid), amount, type: 'settlement_dissolution',
+      idempotencyKey: `dissolve:${settlementId}:${uid}`, refs: { settlementId, actorUserId: actorId },
+    });
+  }
+
+  const parcels = await tx.query<{ id: string; chunk_key: string }>(
+    `UPDATE parcels SET owner_user_id = $2, settlement_id = NULL, name = COALESCE(name, left($3 || ' land', 40)), updated_at = now()
+      WHERE settlement_id = $1 RETURNING id, chunk_key`,
+    [settlementId, actorId, s.name],
+  );
+  for (const p of parcels.rows) {
+    await tx.query("INSERT INTO parcel_ownership_history (parcel_id, to_user_id, reason) VALUES ($1,$2,'settlement_dissolved')", [p.id, actorId]);
+    await publish(tx, `chunk:${p.chunk_key}`, 'parcel', (await parcelEventPayload(tx, p.id)) as Record<string, unknown>);
+  }
+  const blds = await tx.query<{ id: string }>('UPDATE buildings SET owner_user_id = $2, settlement_id = NULL, updated_at = now() WHERE settlement_id = $1 RETURNING id', [settlementId, actorId]);
+  for (const b of blds.rows) {
+    const bs = await buildingSummary(tx, b.id);
+    await publish(tx, `chunk:${bs.chunkKey}`, 'building', { building: bs.building });
+  }
+
+  await activity(tx, settlementId, actorId, 'dissolved', { name: s.name });
+  await notifyMembers(tx, settlementId, 'settlement_dissolved', `${s.name} was dissolved`, share > 0 ? 'Your share of the treasury was paid to your wallet.' : '', actorId);
+  await tx.query('DELETE FROM settlement_members WHERE settlement_id = $1', [settlementId]);
+  await tx.query('UPDATE settlements SET dissolved_at = now() WHERE id = $1', [settlementId]);
+  await audit(tx, actorId, 'settlement.dissolve', 'settlement', settlementId, { treasury: bal, members: members.length, parcels: parcels.rowCount, buildings: blds.rowCount });
+  for (const uid of members) {
+    await publishWallet(tx, uid);
+    await publish(tx, `user:${uid}`, 'player', {});
+  }
+  return { settlementId, dissolved: true, treasuryShare: share, parcels: parcels.rowCount, buildings: blds.rowCount };
 }
 
 export async function projectContributions(db: Db, projectId: string) {

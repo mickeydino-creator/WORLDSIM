@@ -232,6 +232,42 @@ function NewProposal({ s }: { s: SettlementData }) {
   );
 }
 
+function DissolveSettlement({ s }: { s: SettlementData }) {
+  const [open, setOpen] = useState(false);
+  const [confirm, setConfirm] = useState('');
+  const others = s.members.length - 1;
+  const matches = confirm.trim().toLowerCase() === s.name.toLowerCase();
+  return (
+    <Section title="Dissolve settlement">
+      {!open ? (
+        <>
+          <p className="mb-2 text-xs text-fog-400">
+            As founder you cannot leave, but you can dissolve the settlement. Unfinished projects are refunded, open votes are closed,
+            the treasury is split equally among all {s.members.length} member(s), and settlement land and buildings become yours.
+          </p>
+          <Button variant="danger" onClick={() => setOpen(true)} data-testid="dissolve-open">Dissolve settlement…</Button>
+        </>
+      ) : (
+        <form className="space-y-2" onSubmit={async (e) => {
+          e.preventDefault();
+          if (!matches) return;
+          if (await run(() => apiPost(`/api/settlements/${s.id}/dissolve`, { confirmName: confirm.trim() }), `${s.name} was dissolved`)) {
+            await refreshMe();
+            bump('settlement', 'wallet', 'selection');
+          }
+        }}>
+          <p className="text-xs text-danger">This cannot be undone{others > 0 ? ` and removes ${others} other member(s)` : ''}. Type <b>{s.name}</b> to confirm.</p>
+          <Input value={confirm} onChange={(e) => setConfirm(e.target.value)} aria-label="Settlement name" data-testid="dissolve-confirm" />
+          <div className="flex gap-2">
+            <Button type="submit" variant="danger" disabled={!matches} data-testid="dissolve-submit">Dissolve permanently</Button>
+            <Button variant="ghost" onClick={() => { setOpen(false); setConfirm(''); }}>Cancel</Button>
+          </div>
+        </form>
+      )}
+    </Section>
+  );
+}
+
 function Member({ s }: { s: SettlementData }) {
   const me = game.use((st) => st.me)!;
   const role = s.myRole!;
@@ -252,9 +288,11 @@ function Member({ s }: { s: SettlementData }) {
         <Row label="Voting rules">{s.governance.quorumPct}% quorum · &gt;{s.governance.approvalPct}% yes · {s.governance.votingHours}h</Row>
         <div className="mt-2 flex gap-2">
           <Button variant="secondary" onClick={() => flyTo(s.lng, s.lat, 16)}>Go to settlement</Button>
-          {role !== 'founder' && <Button variant="danger" onClick={() => act(() => apiPost(`/api/settlements/${s.id}/leave`), 'You left the settlement')}>Leave</Button>}
+          {role !== 'founder' && <Button variant="danger" data-testid="leave-settlement" onClick={() => act(() => apiPost(`/api/settlements/${s.id}/leave`), 'You left the settlement')}>Leave settlement</Button>}
         </div>
       </Section>
+
+      {role === 'founder' && <DissolveSettlement s={s} />}
 
       <Section title="Proposals & votes">
         {s.proposals.length === 0 && <Empty>No proposals yet.</Empty>}

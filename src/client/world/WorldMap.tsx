@@ -22,6 +22,7 @@ const STATE_COLORS: Record<string, string> = {
   owned: '#d08a5c',
   settlement: '#7c6aa8',
   mysettlement: '#a98bf0',
+  forsale: '#f2c14e',
   restricted: '#b84a4a',
   water: '#3f7f9f',
 };
@@ -54,8 +55,8 @@ function parcelFeatures(chunks: Map<string, Chunk>, keys: string[], me: Me | nul
       const o = owners.get(id);
       let state: string = cls === 'water' || cls === 'restricted' ? cls : 'available';
       if (o?.settlementId) state = o.settlementId === me?.settlement?.id ? 'mysettlement' : 'settlement';
-      else if (o?.ownerId) state = o.ownerId === me?.id ? 'mine' : 'owned';
-      features.push({ type: 'Feature', id: undefined, properties: { id, state, cls }, geometry: { type: 'Polygon', coordinates: [parcelRing(id)] } });
+      else if (o?.ownerId) state = o.ownerId === me?.id ? 'mine' : o.listingPrice ? 'forsale' : 'owned';
+      features.push({ type: 'Feature', id: undefined, properties: { id, state, cls, name: o?.name ?? '' }, geometry: { type: 'Polygon', coordinates: [parcelRing(id)] } });
     }
   }
   return { type: 'FeatureCollection' as const, features };
@@ -76,7 +77,9 @@ export default function WorldMap() {
     const f = game.get().flyTo;
     if (!map || !readyRef.current || !f || f.seq === flySeqRef.current) return;
     flySeqRef.current = f.seq;
-    map.flyTo({ center: [f.lng, f.lat], zoom: f.zoom ?? Math.max(map.getZoom(), 16), pitch: 55, speed: 1.6 });
+    const target = { center: [f.lng, f.lat] as [number, number], zoom: f.zoom ?? Math.max(map.getZoom(), 16), pitch: 55 };
+    if (f.instant) map.jumpTo(target);
+    else map.flyTo({ ...target, speed: 1.6 });
   };
 
   useEffect(() => {
@@ -128,6 +131,14 @@ export default function WorldMap() {
             'line-opacity': ['match', ['get', 'state'], 'available', 0.45, 'water', 0, 0.9],
           },
         });
+        // Land names (needs the style's glyphs; skipped on the offline fallback style).
+        if (map.getStyle().glyphs) {
+          map.addLayer({
+            id: 'ws-parcel-names', type: 'symbol', source: 'ws-parcels', minzoom: 15.5, filter: ['!=', ['get', 'name'], ''],
+            layout: { 'text-field': ['get', 'name'], 'text-size': 12, 'text-font': ['Noto Sans Regular'], 'text-allow-overlap': false, 'symbol-placement': 'point' },
+            paint: { 'text-color': '#1d2228', 'text-halo-color': 'rgba(245,240,228,0.9)', 'text-halo-width': 1.4 },
+          });
+        }
         map.addLayer({ id: 'ws-selected-line', type: 'line', source: 'ws-selected', paint: { 'line-color': '#ffffff', 'line-width': 2.5 } });
         map.addLayer({
           id: 'ws-footprint-line', type: 'line', source: 'ws-footprint',

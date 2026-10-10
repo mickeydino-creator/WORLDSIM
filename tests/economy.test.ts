@@ -21,7 +21,7 @@ const [cx, cy] = parcelCenter(pid);
 async function withBuilding(type: string, dx = 0): Promise<{ u: TestUser; buildingId: string }> {
   const u = await registerUser();
   await setLevel(u.id, 5);
-  expect((await call(purchase.POST, { user: u, params: { id: pid } })).status).toBe(200);
+  expect((await call(purchase.POST, { body: { name: 'Test land' }, user: u, params: { id: pid } })).status).toBe(200);
   const [x, y] = metersToLngLat([cx, cy], dx, 0);
   const r = await call(build.POST, { user: u, body: { type, parcelId: pid, lng: x, lat: y, rotation: 0 } });
   expect(r.status, JSON.stringify(r.error)).toBe(200);

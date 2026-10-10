@@ -47,9 +47,9 @@ const buyT: number[] = [], buildT: number[] = [], tradeT: number[] = [], chunkT:
 const t0 = performance.now();
 const results = await Promise.all(users.map(async (u, i) => {
   // Everyone first races for the same parcel, then buys their own.
-  const contestedWin = await timed(buyT, () => withTx((tx) => purchaseParcel(tx, u, contested, `${u}:c`)));
+  const contestedWin = await timed(buyT, () => withTx((tx) => purchaseParcel(tx, u, contested, `${u}:c`, { name: 'Contested' })));
   const own = parcelIdAt(base.lng + (i % 20) * 0.0016, base.lat + Math.floor(i / 20) * 0.0011 + 0.002);
-  const bought = await timed(buyT, () => withTx((tx) => purchaseParcel(tx, u, own, `${u}:own`)));
+  const bought = await timed(buyT, () => withTx((tx) => purchaseParcel(tx, u, own, `${u}:own`, { name: 'Load test plot' })));
   if (bought) {
     const [x, y] = parcelCenter(own);
     await timed(buildT, () => withTx((tx) => placeBuilding(tx, u, { type: 'small_house', parcelId: own, lng: x, lat: y, rotation: 0 }, `${u}:b`)));

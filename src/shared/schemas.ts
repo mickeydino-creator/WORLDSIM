@@ -15,9 +15,16 @@ export const loginSchema = z.object({
   password: z.string().min(1).max(200),
 });
 
+export const landNameSchema = z.string().trim().min(1, 'Give your land a name').max(40, 'At most 40 characters');
+
 export const purchaseSchema = z.object({
+  name: landNameSchema,
   maxPrice: z.number().int().positive().max(MAX_MINOR).optional(),
 });
+
+export const renameParcelSchema = z.object({ name: landNameSchema });
+export const listParcelSchema = z.object({ price: z.number().int().positive().max(MAX_MINOR) });
+export const dissolveSchema = z.object({ confirmName: z.string().trim().min(1).max(40) });
 
 export const permissionSchema = z.object({
   username: z.string().regex(/^[A-Za-z0-9_]{3,24}$/),

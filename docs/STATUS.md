@@ -1,7 +1,7 @@
 # Implementation status
 
 Snapshot of what is built, how it was verified, and what is missing. "Automated" means covered by the
-Vitest integration suite (66 tests against real PostgreSQL/PostGIS, `npm test`) and/or the Playwright
+Vitest integration suite (72 tests against real PostgreSQL/PostGIS, `npm test`) and/or the Playwright
 suite (6 browser tests, `npm run test:e2e`). "Verified manually" means exercised in a real browser
 (headless Chromium with WebGL via SwiftShader) with screenshots, but without an automated assertion.
 
@@ -21,6 +21,13 @@ computed price (land class × local demand), purchase with atomic debit + owners
 client price ignored (max-price guard only), already-owned / water / restricted / insufficient funds
 rejections, 8 simultaneous buyers → exactly one winner, idempotent replay never double-charges, parcel cap
 by level, build permissions granted by owners.
+
+**Land naming, sales and teleport:** a name (1-40 characters) is required to buy land and can be changed
+by the owner; instant sale of land and its buildings to the land office (half the current land price plus
+40% of building cost, never more than was paid; refused while production runs or other players own
+buildings on it); player listings with asking price, cancellation, 2% fee, and transfer of the seller's
+buildings to the buyer; three simultaneous buyers → exactly one succeeds; teleport menu and "My land" list
+(E2E: name → rename → teleport → list → second player buys → sells to land office).
 
 **Construction:** placement inside owned parcel, cost + resources charged, persistence across reload,
 overlap rejection, adjacent placement allowed, out-of-bounds rejection, other player's land forbidden
@@ -54,6 +61,10 @@ broadcast to subscribers of the chunk, rolled-back changes never broadcast, obse
 by events, missed events replayed after reconnect, presence per chunk, removed settlement members stop
 receiving settlement events.
 
+**Settlement dissolution:** founder-only with name confirmation; unfinished projects refunded, open votes
+closed, treasury split equally among members (remainder to founder), settlement land and buildings
+transferred to the founder, name released for reuse.
+
 **Interface (E2E):** every navigation panel opens without page errors and shows real data (wallet 50,000 CR,
 inventory, ledger "starting grant", research points), locked actions are disabled with a reason.
 
@@ -84,7 +95,7 @@ round trip verified (row counts and ledger match).
   production rules, operating costs and market orders, but no employees. Business inventory is pooled in
   the owner's storage rather than per building.
 - **Settlement land purchases from the treasury**: settlements gain land by founding grant or member
-  donation only.
+  donation only. Individual buildings cannot be sold apart from their land (they are sold with it).
 - **Terrain-aware 3D**: terrain is rendered as hillshading; there is no elevation-displaced 3D terrain mesh
   and buildings sit on a flat plane. Forest/mountain land classes are not derived (no server-side
   land-cover/elevation dataset); classes are land, coastal, urban, water, restricted.
