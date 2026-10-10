@@ -7,11 +7,28 @@
 // Chunks: aligned CHUNK_DEG x CHUNK_DEG lat/lng boxes; a parcel belongs to the chunk that
 // contains its centre. Chunks are the unit of loading, caching and realtime subscription.
 
-export const CELL_DEG = 0.001;
-export const CHUNK_DEG = 0.02;
-export const ROWS = Math.round(180 / CELL_DEG);
-export const CHUNK_ROWS = Math.round(180 / CHUNK_DEG);
-export const CHUNK_COLS = Math.round(360 / CHUNK_DEG);
+export const CELLS_PER_DEG = 1000;
+export const CHUNKS_PER_DEG = 50;
+export const CELL_DEG = 1 / CELLS_PER_DEG;
+export const CHUNK_DEG = 1 / CHUNKS_PER_DEG;
+export const ROWS = 180 * CELLS_PER_DEG;
+export const CHUNK_ROWS = 180 * CHUNKS_PER_DEG;
+export const CHUNK_COLS = 360 * CHUNKS_PER_DEG;
+
+// Boundaries are computed as integer / integer so they are the nearest doubles to the exact values,
+// and index lookups are corrected against those same boundaries. This keeps parcelIdAt() and
+// parcelBounds() consistent even for points that lie exactly on an edge.
+const rowSouth = (row: number) => (row - 90 * CELLS_PER_DEG) / CELLS_PER_DEG;
+const colWest = (col: number, n: number) => (col * 360) / n - 180;
+const chunkSouth = (r: number) => (r - 90 * CHUNKS_PER_DEG) / CHUNKS_PER_DEG;
+const chunkWest = (c: number) => (c - 180 * CHUNKS_PER_DEG) / CHUNKS_PER_DEG;
+
+function fixIndex(i: number, max: number, lo: (i: number) => number, x: number): number {
+  i = Math.min(max - 1, Math.max(0, i));
+  if (i > 0 && x < lo(i)) i--;
+  else if (i < max - 1 && x >= lo(i + 1)) i++;
+  return i;
+}
 
 /** Minimum zoom at which parcels are shown/queried. */
 export const PARCEL_MIN_ZOOM = 14;
@@ -21,12 +38,12 @@ export const MAX_CHUNKS_PER_REQUEST = 40;
 export type LngLat = [number, number];
 
 export function rowOfLat(lat: number): number {
-  return Math.min(ROWS - 1, Math.max(0, Math.floor((lat + 90) / CELL_DEG)));
+  return fixIndex(Math.floor((lat + 90) * CELLS_PER_DEG), ROWS, rowSouth, lat);
 }
 
 export function colsInRow(row: number): number {
-  const centerLat = -90 + (row + 0.5) * CELL_DEG;
-  return Math.max(1, Math.floor((360 * Math.cos((centerLat * Math.PI) / 180)) / CELL_DEG));
+  const centerLat = rowSouth(row) + CELL_DEG / 2;
+  return Math.max(1, Math.floor(360 * CELLS_PER_DEG * Math.cos((centerLat * Math.PI) / 180)));
 }
 
 function normLng(lng: number): number {
@@ -38,7 +55,8 @@ function normLng(lng: number): number {
 export function parcelIdAt(lng: number, lat: number): string {
   const row = rowOfLat(lat);
   const n = colsInRow(row);
-  const col = Math.min(n - 1, Math.floor(((normLng(lng) + 180) / 360) * n));
+  const x = normLng(lng);
+  const col = fixIndex(Math.floor(((x + 180) / 360) * n), n, (c) => colWest(c, n), x);
   return `${row}_${col}`;
 }
 
@@ -62,10 +80,7 @@ export function parcelBounds(id: string): ParcelBounds {
   const p = parseParcelId(id);
   if (!p) throw new Error(`invalid parcel id ${id}`);
   const n = colsInRow(p.row);
-  const w = 360 / n;
-  const south = -90 + p.row * CELL_DEG;
-  const west = -180 + p.col * w;
-  return { west, south, east: west + w, north: south + CELL_DEG };
+  return { west: colWest(p.col, n), south: rowSouth(p.row), east: colWest(p.col + 1, n), north: rowSouth(p.row + 1) };
 }
 
 export function parcelCenter(id: string): LngLat {
@@ -86,8 +101,9 @@ export function parcelRing(id: string): LngLat[] {
 }
 
 export function chunkKeyAt(lng: number, lat: number): string {
-  const r = Math.min(CHUNK_ROWS - 1, Math.max(0, Math.floor((lat + 90) / CHUNK_DEG)));
-  const c = Math.min(CHUNK_COLS - 1, Math.floor((normLng(lng) + 180) / CHUNK_DEG));
+  const x = normLng(lng);
+  const r = fixIndex(Math.floor((lat + 90) * CHUNKS_PER_DEG), CHUNK_ROWS, chunkSouth, lat);
+  const c = fixIndex(Math.floor((x + 180) * CHUNKS_PER_DEG), CHUNK_COLS, chunkWest, x);
   return `${r}_${c}`;
 }
 
@@ -103,9 +119,7 @@ export function parseChunkKey(key: string): { row: number; col: number } | null 
 export function chunkBounds(key: string): ParcelBounds {
   const k = parseChunkKey(key);
   if (!k) throw new Error(`invalid chunk key ${key}`);
-  const south = -90 + k.row * CHUNK_DEG;
-  const west = -180 + k.col * CHUNK_DEG;
-  return { west, south, east: west + CHUNK_DEG, north: south + CHUNK_DEG };
+  return { west: chunkWest(k.col), south: chunkSouth(k.row), east: chunkWest(k.col + 1), north: chunkSouth(k.row + 1) };
 }
 
 export function chunkOfParcel(id: string): string {
@@ -119,16 +133,14 @@ export function parcelsInChunk(key: string): string[] {
   const ids: string[] = [];
   const r0 = rowOfLat(b.south + CELL_DEG / 2);
   const r1 = rowOfLat(b.north - CELL_DEG / 2);
-  for (let row = r0; row <= r1; row++) {
-    const centerLat = -90 + (row + 0.5) * CELL_DEG;
-    if (centerLat < b.south || centerLat >= b.north) continue;
+  for (let row = Math.max(0, r0 - 1); row <= Math.min(ROWS - 1, r1 + 1); row++) {
     const n = colsInRow(row);
     const w = 360 / n;
-    const c0 = Math.max(0, Math.floor((b.west + 180) / w - 0.5));
-    const c1 = Math.min(n - 1, Math.ceil((b.east + 180) / w));
+    const c0 = Math.max(0, Math.floor((b.west + 180) / w) - 1);
+    const c1 = Math.min(n - 1, Math.ceil((b.east + 180) / w) + 1);
     for (let col = c0; col <= c1; col++) {
-      const centerLng = -180 + (col + 0.5) * w;
-      if (centerLng >= b.west && centerLng < b.east) ids.push(`${row}_${col}`);
+      const id = `${row}_${col}`;
+      if (chunkOfParcel(id) === key) ids.push(id);
     }
   }
   return ids;

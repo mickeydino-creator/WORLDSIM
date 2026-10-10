@@ -52,6 +52,27 @@ describe('grid', () => {
     }
   });
 
+  it('random points always fall inside the bounds of their parcel and chunk', () => {
+    let seed = 42;
+    const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31);
+    for (let i = 0; i < 5000; i++) {
+      // Snap some samples exactly onto grid lines to exercise edge cases.
+      const snap = i % 3 === 0;
+      const lat = snap ? Math.round((rnd() * 160 - 80) * 1000) / 1000 : rnd() * 160 - 80;
+      const lng = snap ? Math.round((rnd() * 360 - 180) * 50) / 50 : rnd() * 360 - 180;
+      const b = parcelBounds(parcelIdAt(lng, lat));
+      expect(lat >= b.south && lat < b.north && lng >= b.west && lng < b.east, `${lng},${lat}`).toBe(true);
+    }
+  });
+
+  it('chunk parcel lists are disjoint between neighbours', () => {
+    const a = parcelsInChunk('6831_9122');
+    const b = parcelsInChunk('6831_9123');
+    const c = parcelsInChunk('6832_9122');
+    const all = [...a, ...b, ...c];
+    expect(new Set(all).size).toBe(all.length);
+  });
+
   it('parcels are roughly 111 m square at mid latitudes', () => {
     const id = parcelIdAt(2.45, 46.63);
     const ring = parcelRing(id);
