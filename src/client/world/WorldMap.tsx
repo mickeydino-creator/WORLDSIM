@@ -68,6 +68,16 @@ export default function WorldMap() {
   const keysRef = useRef<string[]>([]);
   const fallbackRef = useRef(false);
   const readyRef = useRef(false);
+  const flySeqRef = useRef(0);
+
+  // Camera requests can arrive before the map has loaded; apply the latest one when possible.
+  const applyFlyTo = () => {
+    const map = mapRef.current;
+    const f = game.get().flyTo;
+    if (!map || !readyRef.current || !f || f.seq === flySeqRef.current) return;
+    flySeqRef.current = f.seq;
+    map.flyTo({ center: [f.lng, f.lat], zoom: f.zoom ?? Math.max(map.getZoom(), 16), pitch: 55, speed: 1.6 });
+  };
 
   useEffect(() => {
     let disposed = false;
@@ -130,6 +140,7 @@ export default function WorldMap() {
         game.set({ mapStatus: fallback ? 'fallback' : 'ready' });
         onMove();
         syncLayers();
+        applyFlyTo();
       });
 
       const onMove = () => {
@@ -248,9 +259,7 @@ export default function WorldMap() {
         }
         if (p && prev.placement && p.rotation !== prev.placement.rotation && p.lngLat) updatePlacement(p.lngLat);
       }
-      if (s.flyTo && s.flyTo !== prev.flyTo && map) {
-        map.flyTo({ center: [s.flyTo.lng, s.flyTo.lat], zoom: s.flyTo.zoom ?? Math.max(map.getZoom(), 16), pitch: 55, speed: 1.6 });
-      }
+      if (s.flyTo !== prev.flyTo) applyFlyTo();
       prev = s;
     });
   }, []);
