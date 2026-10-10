@@ -17,11 +17,25 @@ async function geoVersion(db: Db): Promise<number> {
   return Number(r.rows[0].value);
 }
 
+// Concurrent requests for the same uncached chunk share one computation (per process).
+const inflightSurveys = new Map<string, Promise<Record<string, LandClass>>>();
+
 /** Returns { parcelId: landClass } for every parcel in the chunk, computing and caching on first use. */
 export async function surveyChunk(db: Db, chunkKey: string): Promise<Record<string, LandClass>> {
   const version = await geoVersion(db);
   const cached = await db.query<{ cells: Record<string, LandClass>; geo_version: number }>('SELECT cells, geo_version FROM parcel_surveys WHERE chunk_key = $1', [chunkKey]);
   if (cached.rows[0] && cached.rows[0].geo_version === version) return cached.rows[0].cells;
+  // Inside a transaction we must use the caller's connection; elsewhere share in-flight work.
+  if ('release' in db) return computeSurvey(db, chunkKey, version);
+  let p = inflightSurveys.get(chunkKey);
+  if (!p) {
+    p = computeSurvey(db, chunkKey, version).finally(() => inflightSurveys.delete(chunkKey));
+    inflightSurveys.set(chunkKey, p);
+  }
+  return p;
+}
+
+async function computeSurvey(db: Db, chunkKey: string, version: number): Promise<Record<string, LandClass>> {
 
   const ids = parcelsInChunk(chunkKey);
   const pid: string[] = [];
@@ -116,7 +130,19 @@ export async function loadChunks(db: Db, keys: string[]): Promise<ChunkPayload[]
   for (const k of unique) if (!parseChunkKey(k)) fail('invalid_input', `Invalid chunk key ${k}`);
 
   const surveys: Record<string, Record<string, LandClass>> = {};
-  for (const k of unique) surveys[k] = await surveyChunk(db, k);
+  const version = await geoVersion(db);
+  const cached = await db.query<{ chunk_key: string; cells: Record<string, LandClass> }>(
+    'SELECT chunk_key, cells FROM parcel_surveys WHERE chunk_key = ANY($1) AND geo_version = $2',
+    [unique, version],
+  );
+  for (const r of cached.rows) surveys[r.chunk_key] = r.cells;
+  const missing = unique.filter((k) => !surveys[k]);
+  // Compute missing surveys a few at a time so one viewport cannot monopolise the pool.
+  for (let i = 0; i < missing.length; i += 4) {
+    const batch = missing.slice(i, i + 4);
+    const done = await Promise.all(batch.map((k) => surveyChunk(db, k)));
+    batch.forEach((k, j) => (surveys[k] = done[j]));
+  }
 
   const parcels = await db.query<ChunkPayload['parcels'][number] & { chunk_key: string }>(
     `SELECT p.id, p.chunk_key, p.owner_user_id AS "ownerId", u.display_name AS "ownerName",

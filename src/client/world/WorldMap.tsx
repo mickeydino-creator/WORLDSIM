@@ -117,7 +117,7 @@ export default function WorldMap() {
           id: 'ws-parcel-fill', type: 'fill', source: 'ws-parcels', minzoom: PARCEL_MIN_ZOOM,
           paint: {
             'fill-color': colorExpr,
-            'fill-opacity': ['match', ['get', 'state'], 'available', 0.08, 'water', fallback ? 0.9 : 0, 'restricted', 0.25, 0.32],
+            'fill-opacity': ['match', ['get', 'state'], 'available', 0.08, 'water', fallback ? 0.9 : 0, 'restricted', 0.25, 'mine', 0.2, 0.28],
           },
         });
         map.addLayer({
