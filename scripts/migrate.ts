@@ -3,9 +3,10 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import pg from 'pg';
 import { loadEnv } from './env';
+import { pgConfig } from '../src/server/pgconfig';
 
 export async function migrate(databaseUrl: string, log = console.log) {
-  const client = new pg.Client({ connectionString: databaseUrl });
+  const client = new pg.Client(pgConfig(databaseUrl));
   await client.connect();
   try {
     await client.query(`CREATE TABLE IF NOT EXISTS schema_migrations (

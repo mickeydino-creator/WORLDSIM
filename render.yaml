@@ -1,0 +1,24 @@
+# Render Blueprint: one free web service running the app, the realtime gateway and the worker.
+# The database is external (e.g. Supabase); paste its connection string as DATABASE_URL.
+services:
+  - type: web
+    name: worldstate
+    runtime: node
+    plan: free
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm run bootstrap && npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: NODE_VERSION
+        value: "22"
+      - key: RUN_WORKER
+        value: "1"
+      - key: TRUST_PROXY
+        value: "1"
+      - key: DB_POOL_MAX
+        value: "8"
+      - key: LOG_LEVEL
+        value: info

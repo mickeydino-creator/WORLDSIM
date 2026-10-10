@@ -2,6 +2,8 @@
 
 ## Deployment
 
+For a free single-service setup on Supabase + Render see [DEPLOY.md](DEPLOY.md). General steps:
+
 1. Provision PostgreSQL 14+ with PostGIS 3. As a superuser create the database and run
    `CREATE EXTENSION postgis; CREATE EXTENSION pgcrypto;`. The application role needs no superuser rights.
 2. Set environment variables (README › Environment variables). In production set `NODE_ENV=production`,

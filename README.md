@@ -11,6 +11,7 @@ vote deadlines) while players are offline.
 - Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - Implementation status (completed / tested / incomplete / blocked): [docs/STATUS.md](docs/STATUS.md)
 - Operations (limits, deployment, backups, scaling, security): [docs/OPERATIONS.md](docs/OPERATIONS.md)
+- **Free hosting on Supabase + Render: [docs/DEPLOY.md](docs/DEPLOY.md)**
 
 ## Stack
 
@@ -60,6 +61,7 @@ select an available parcel, buy it, then use **Build** to place a structure.
 | `npm run worker` | Durable job worker (run one or more instances) |
 | `npm run db:migrate` | Apply SQL migrations (`-- --test` for the test DB) |
 | `npm run geo:import` | Import Natural Earth geography (`-- --test` for the test DB) |
+| `npm run bootstrap` | Migrate and import geography if missing (used on hosted start-up) |
 | `npm test` | Vitest unit + integration + concurrency + realtime tests (uses `TEST_DATABASE_URL`) |
 | `npm run test:e2e` | Playwright browser tests against a running **dev** server + worker (they read the dev-only `window.__worldstate` store) |
 | `npm run typecheck` | TypeScript check |
@@ -76,6 +78,8 @@ select an available parcel, buy it, then use **Build** to place a structure.
 | `APP_ORIGIN` | prod | Public origin, e.g. `https://worldstate.example.com`. Mutating requests and WebSocket upgrades must carry this `Origin` (or match the `Host`). |
 | `PORT`, `HOST` | no | Listen port/host (default `3000`, `0.0.0.0`). |
 | `DB_POOL_MAX` | no | Max DB connections per process (default 10). |
+| `RUN_WORKER` | no | `1` runs the background worker inside the web process (single-service hosting such as Render free). |
+| `DATABASE_CA_CERT` | no | PEM CA certificate to verify the database TLS certificate (e.g. Supabase CA). Without it, TLS is used without CA verification when the URL has `sslmode=require` or points at Supabase. |
 | `COOKIE_SECURE` | no | `1` forces `Secure` cookies; automatic when `NODE_ENV=production` (set `0` to disable). |
 | `TRUST_PROXY` | no | `1` to trust `X-Forwarded-For` for client IPs (only behind your own proxy). |
 | `LOG_LEVEL` | no | `debug` / `info` (default) / `warn` / `error`. Logs are JSON lines on stdout/stderr. |

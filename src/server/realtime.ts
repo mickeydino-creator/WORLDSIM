@@ -7,6 +7,7 @@ import pg from 'pg';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { SESSION_COOKIE, parseCookies, userForToken, type SessionUser } from './auth';
 import { getPool } from './db';
+import { pgConfig } from './pgconfig';
 import { EVENTS_CHANNEL } from './events';
 import { log, reportError } from './log';
 import { parseChunkKey } from '@/shared/grid';
@@ -51,7 +52,7 @@ export class RealtimeHub {
   }
 
   private async connectListener() {
-    const client = new pg.Client({ connectionString: process.env.DATABASE_URL, application_name: 'worldstate-realtime' });
+    const client = new pg.Client({ ...pgConfig(process.env.DATABASE_URL!), application_name: 'worldstate-realtime' });
     client.on('notification', (msg) => {
       if (msg.channel !== EVENTS_CHANNEL || !msg.payload) return;
       this.pending.push(Number(msg.payload));

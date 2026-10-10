@@ -103,5 +103,7 @@ round trip verified (row counts and ledger match).
   OPERATIONS.md › Security for what to enable if the DB is ever exposed).
 - **Email verification and password reset**: require an email provider (SMTP/API credentials).
 - **Error monitoring service**: a generic `ERROR_WEBHOOK_URL` hook exists; no Sentry/other DSN provided.
-- **Production hosting, TLS, off-site backup storage**: no deployment target or storage credentials
-  provided. Backup/restore scripts are ready and verified locally.
+- **Live deployment**: a free Supabase + Render setup is prepared and verified locally (fresh-database
+  bootstrap, RLS lockdown of Supabase's `anon`/`authenticated` roles, TLS connection, in-process worker in a
+  production build) — see DEPLOY.md. Creating the Supabase project and Render service requires the owner's
+  accounts. Off-site backup storage still needs storage credentials.

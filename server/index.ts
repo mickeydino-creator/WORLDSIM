@@ -4,6 +4,8 @@ import { parse } from 'node:url';
 import { loadEnv } from '../scripts/env';
 loadEnv();
 process.env.WORLDSTATE_PROCESS ??= 'web';
+// On Render the public URL is provided automatically.
+process.env.APP_ORIGIN ??= process.env.RENDER_EXTERNAL_URL;
 
 const { default: next } = await import('next');
 const { RealtimeHub } = await import('@/server/realtime');
@@ -20,6 +22,13 @@ const nextUpgrade = app.getUpgradeHandler();
 
 const hub = new RealtimeHub();
 await hub.start();
+
+// Optional: run the background worker inside this process (single-service hosting).
+let stopWorker: (() => Promise<void>) | null = null;
+if (process.env.RUN_WORKER === '1') {
+  const { startWorkerLoop } = await import('@/server/worker/loop');
+  stopWorker = startWorkerLoop();
+}
 (globalThis as { __worldstateHub?: InstanceType<typeof RealtimeHub> }).__worldstateHub = hub;
 
 const server = createServer((req, res) => {
@@ -43,6 +52,7 @@ server.listen(port, hostname, () => log.info(`WORLDSTATE listening on http://${h
 async function shutdown() {
   log.info('shutting down');
   server.close();
+  await stopWorker?.();
   await hub.stop();
   process.exit(0);
 }

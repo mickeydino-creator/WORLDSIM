@@ -10,6 +10,7 @@
     "worker": "tsx server/worker.ts",
     "db:migrate": "tsx scripts/migrate.ts",
     "geo:import": "tsx scripts/import-geo.ts",
+    "bootstrap": "tsx scripts/bootstrap.ts",
     "typecheck": "tsc --noEmit",
     "lint": "next lint",
     "test": "vitest run",

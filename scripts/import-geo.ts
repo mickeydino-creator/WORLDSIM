@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import pg from 'pg';
 import { loadEnv } from './env';
+import { pgConfig } from '../src/server/pgconfig';
 
 const BASE = 'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson';
 const LAYERS = [
@@ -27,21 +28,23 @@ async function fetchCached(file: string): Promise<string> {
 }
 
 export async function importGeo(databaseUrl: string) {
-  const client = new pg.Client({ connectionString: databaseUrl });
+  const client = new pg.Client(pgConfig(databaseUrl));
   await client.connect();
   try {
     await client.query('BEGIN');
     await client.query('DELETE FROM geo_features');
     for (const { layer, file } of LAYERS) {
       const fc = JSON.parse(await fetchCached(file)) as { features: { geometry: unknown }[] };
+      const geoms = fc.features.map((f) => f.geometry).filter(Boolean);
       let n = 0;
-      for (const f of fc.features) {
-        if (!f.geometry) continue;
-        // ST_Subdivide keeps each stored polygon small (<=128 vertices) so gist lookups stay cheap.
+      // Batched inserts keep the import fast over a remote connection (e.g. a hosted database).
+      // ST_Subdivide keeps each stored polygon small (<=128 vertices) so gist lookups stay cheap.
+      for (let i = 0; i < geoms.length; i += 200) {
         const r = await client.query(
           `INSERT INTO geo_features (layer, geom)
-           SELECT $1, ST_Subdivide(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON($2), 4326)), 128)`,
-          [layer, JSON.stringify(f.geometry)],
+           SELECT $1, ST_Subdivide(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON(g), 4326)), 128)
+             FROM jsonb_array_elements($2::jsonb) AS g`,
+          [layer, JSON.stringify(geoms.slice(i, i + 200))],
         );
         n += r.rowCount ?? 0;
       }

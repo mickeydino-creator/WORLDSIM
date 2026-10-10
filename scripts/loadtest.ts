@@ -12,7 +12,8 @@ if (!url) throw new Error('TEST_DATABASE_URL not set');
 const PLAYERS = Number(process.argv[2] ?? 50);
 
 const { setPool, withTx, getPool } = await import('@/server/db');
-setPool(new pg.Pool({ connectionString: url, max: 20 }));
+const { pgConfig } = await import('@/server/pgconfig');
+setPool(new pg.Pool({ ...pgConfig(url), max: 20 }));
 const { createPlayer } = await import('@/server/services/players');
 const { purchaseParcel, loadChunks } = await import('@/server/services/land');
 const { placeBuilding } = await import('@/server/services/buildings');

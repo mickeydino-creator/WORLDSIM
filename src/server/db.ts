@@ -1,5 +1,6 @@
 import pg from 'pg';
 import { log } from './log';
+import { pgConfig } from './pgconfig';
 
 // bigint (int8) columns come back as strings by default; balances fit comfortably in
 // Number.MAX_SAFE_INTEGER (9e15 minor units = 9e13 credits), which we enforce at the API layer.
@@ -22,7 +23,7 @@ export function getPool(): pg.Pool {
     const connectionString = process.env.DATABASE_URL;
     if (!connectionString) throw new Error('DATABASE_URL is not set');
     const pool = new pg.Pool({
-      connectionString,
+      ...pgConfig(connectionString),
       max: Number(process.env.DB_POOL_MAX ?? 10),
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 10_000,
