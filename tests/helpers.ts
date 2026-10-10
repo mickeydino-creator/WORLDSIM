@@ -59,7 +59,7 @@ export async function call(handler: Handler, opts: { user?: TestUser; method?: s
   if (method !== 'GET' && opts.key !== null) headers['idempotency-key'] = opts.key ?? randomUUID();
   const req = new Request(`${ORIGIN}/api/x${opts.query ?? ''}`, { method, headers, body: method === 'GET' ? undefined : JSON.stringify(opts.body ?? {}) });
   const res = await handler(req, { params: Promise.resolve(opts.params ?? {}) });
-  const json = (await res.json()) as { ok: boolean; data?: any; error?: { code: string; message: string } };
+  const json = (await res.json()) as { ok: boolean; data?: any; replayed?: boolean; error?: { code: string; message: string } };
   return { status: res.status, ...json };
 }
 
