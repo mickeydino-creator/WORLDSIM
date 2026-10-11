@@ -5,11 +5,21 @@ import { loadEnv } from './env';
 import { migrate } from './migrate';
 import { importGeo } from './import-geo';
 import { pgConfig } from '../src/server/pgconfig';
+import { explainConnectionError } from './db-diagnose';
 
 loadEnv();
 const url = process.env.DATABASE_URL;
 if (!url) {
   console.error('DATABASE_URL is not set');
+  process.exit(1);
+}
+// Fail fast with a readable explanation instead of hanging on a bad connection string.
+const probe = new pg.Client({ ...pgConfig(url), connectionTimeoutMillis: 15_000 });
+try {
+  await probe.connect();
+  await probe.end();
+} catch (err) {
+  explainConnectionError(err, url);
   process.exit(1);
 }
 await migrate(url);
