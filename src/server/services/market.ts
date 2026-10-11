@@ -7,7 +7,7 @@ import type { Db, Tx } from '../db';
 import { fail } from '../errors';
 import { notifyUser, publish } from '../events';
 import { playerAccountId, systemAccountId, transfer } from '../ledger';
-import { addResources, removeResources, storageCapacity } from './inventory';
+import { addResources, removeResources, storageInfo } from './inventory';
 import { addXp, checkAchievements, getModifiers, publishWallet } from './players';
 
 export const MAX_ORDER_QUANTITY = 1_000_000;
@@ -61,9 +61,8 @@ export async function placeOrder(tx: Tx, userId: string, input: PlaceOrderInput,
   if (side === 'sell') {
     await removeResources(tx, userId, { [resource]: quantity });
   } else {
-    const cap = await storageCapacity(tx, userId);
-    const cur = await tx.query<{ quantity: number }>('SELECT quantity FROM inventories WHERE user_id = $1 AND resource = $2', [userId, resource]);
-    if ((cur.rows[0]?.quantity ?? 0) + quantity > cap) fail('storage_full', `Not enough storage to receive ${quantity} ${resource} (capacity ${cap})`);
+    const { capacity: cap, stock } = await storageInfo(tx, userId);
+    if ((stock[resource] ?? 0) + quantity > cap) fail('storage_full', `Not enough storage to receive ${quantity} ${resource} (capacity ${cap})`);
     await transfer(tx, {
       from: await playerAccountId(tx, userId),
       to: await systemAccountId(tx, 'market_escrow'),

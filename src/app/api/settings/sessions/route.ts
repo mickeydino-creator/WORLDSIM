@@ -1,3 +1,4 @@
+import { invalidateSessions } from '@/server/auth';
 import { actionRoute, getRoute } from '@/server/http';
 
 export const GET = getRoute(async ({ db, user }) => {
@@ -10,5 +11,6 @@ export const GET = getRoute(async ({ db, user }) => {
 
 export const POST = actionRoute({ scope: 'settings.sessions', idempotent: false }, async ({ tx, user }) => {
   const r = await tx.query('DELETE FROM sessions WHERE user_id = $1 AND id <> $2', [user.id, user.sessionId]);
+  invalidateSessions(user.id);
   return { revoked: r.rowCount };
 });

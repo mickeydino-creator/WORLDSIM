@@ -26,7 +26,7 @@ export default function BuildPanel() {
   const placement = game.use((s) => s.placement);
   const zoom = game.use((s) => s.view.zoom);
   const [cat, setCat] = useState<BuildingCategory | 'all'>('all');
-  const inv = useApi<{ inventory: Inventory }>('/api/economy', ['inventory', 'wallet']);
+  const inv = useApi<{ inventory: Inventory }>('/api/inventory', ['inventory']);
   const mine = useApi<{ buildings: { type: string }[] }>('/api/buildings/mine', ['inventory']);
   const parcels = useApi<{ parcels: { id: string; name: string | null; lng: number; lat: number; landClass: string; buildings: number }[] }>('/api/parcels/mine', ['wallet']);
   const owned: Record<string, number> = {};

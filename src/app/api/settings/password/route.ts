@@ -1,4 +1,4 @@
-import { hashPassword, verifyPassword } from '@/server/auth';
+import { hashPassword, invalidateSessions, verifyPassword } from '@/server/auth';
 import { GameError } from '@/server/errors';
 import { audit } from '@/server/events';
 import { actionRoute } from '@/server/http';
@@ -10,6 +10,7 @@ export const POST = actionRoute({ scope: 'settings.password', schema: passwordCh
   await tx.query('UPDATE users SET password_hash = $2 WHERE id = $1', [user.id, await hashPassword(body.newPassword)]);
   // Sign out every other session.
   await tx.query('DELETE FROM sessions WHERE user_id = $1 AND id <> $2', [user.id, user.sessionId]);
+  invalidateSessions(user.id);
   await audit(tx, user.id, 'auth.password_change', 'user', user.id, {}, ip);
   return { changed: true };
 });

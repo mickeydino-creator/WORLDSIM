@@ -30,7 +30,10 @@ const STATE_COLORS: Record<string, string> = {
 function visibleChunkKeys(map: MlMap): string[] {
   if (map.getZoom() < BUILDING_MIN_ZOOM) return [];
   const b = map.getBounds();
-  const keys = chunksInBounds(b.getWest(), b.getSouth(), b.getEast(), b.getNorth());
+  // Prefetch a margin around the viewport so nearby areas are already loaded when the player pans.
+  const padX = (b.getEast() - b.getWest()) * 0.35;
+  const padY = (b.getNorth() - b.getSouth()) * 0.35;
+  const keys = chunksInBounds(b.getWest() - padX, b.getSouth() - padY, b.getEast() + padX, b.getNorth() + padY);
   if (keys.length <= MAX_CHUNKS_PER_REQUEST) return keys;
   // Keep the chunks nearest the centre (bounded request size at oblique pitches).
   const c = map.getCenter();
@@ -44,22 +47,27 @@ function visibleChunkKeys(map: MlMap): string[] {
     .map((x) => x.k);
 }
 
-function parcelFeatures(chunks: Map<string, Chunk>, keys: string[], me: Me | null, fallback: boolean) {
-  const features: import('geojson').Feature[] = [];
-  for (const k of keys) {
-    const c = chunks.get(k);
-    if (!c) continue;
-    const owners = new Map(c.parcels.map((p) => [p.id, p]));
-    for (const [id, cls] of Object.entries(c.cells)) {
-      if (cls === 'water' && !fallback) continue;
-      const o = owners.get(id);
-      let state: string = cls === 'water' || cls === 'restricted' ? cls : 'available';
-      if (o?.settlementId) state = o.settlementId === me?.settlement?.id ? 'mysettlement' : 'settlement';
-      else if (o?.ownerId) state = o.ownerId === me?.id ? 'mine' : o.listingPrice ? 'forsale' : 'owned';
-      features.push({ type: 'Feature', id: undefined, properties: { id, state, cls, name: o?.name ?? '' }, geometry: { type: 'Polygon', coordinates: [parcelRing(id)] } });
-    }
+// Parcel polygons are generated once per chunk object and perspective (who is looking) and reused.
+// Chunk objects are replaced immutably when they change, so identity tells us when to regenerate.
+type Feature = import('geojson').Feature;
+const featureCache = new WeakMap<Chunk, { persp: string; features: Feature[] }>();
+
+function chunkFeatures(c: Chunk, me: Me | null, fallback: boolean): Feature[] {
+  const persp = `${me?.id}|${me?.settlement?.id}|${fallback}`;
+  const hit = featureCache.get(c);
+  if (hit && hit.persp === persp) return hit.features;
+  const owners = new Map(c.parcels.map((p) => [p.id, p]));
+  const features: Feature[] = [];
+  for (const [id, cls] of Object.entries(c.cells)) {
+    if (cls === 'water' && !fallback) continue;
+    const o = owners.get(id);
+    let state: string = cls === 'water' || cls === 'restricted' ? cls : 'available';
+    if (o?.settlementId) state = o.settlementId === me?.settlement?.id ? 'mysettlement' : 'settlement';
+    else if (o?.ownerId) state = o.ownerId === me?.id ? 'mine' : o.listingPrice ? 'forsale' : 'owned';
+    features.push({ type: 'Feature', properties: { id, state, cls, name: o?.name ?? '' }, geometry: { type: 'Polygon', coordinates: [parcelRing(id)] } });
   }
-  return { type: 'FeatureCollection' as const, features };
+  featureCache.set(c, { persp, features });
+  return features;
 }
 
 export default function WorldMap() {
@@ -98,6 +106,9 @@ export default function WorldMap() {
         pitch: v.pitch,
         bearing: v.bearing,
         maxPitch: 70,
+        fadeDuration: 0, // no symbol cross-fade work while panning
+        pixelRatio: Math.min(window.devicePixelRatio || 1, 2), // cap GPU fill cost on 4K/retina screens
+        maxTileCacheSize: 400,
         attributionControl: { compact: true, customAttribution: 'Geography: Natural Earth · Game world: WORLDSTATE' },
       });
       mapRef.current = map;
@@ -201,19 +212,32 @@ export default function WorldMap() {
   }, []);
 
   // Keep map layers in sync with the store.
+  const lastSync = useRef<{ chunks: (Chunk | undefined)[]; persp: string; sel: string | null }>({ chunks: [], persp: '', sel: null });
   const syncLayers = () => {
     const map = mapRef.current;
     if (!map || !readyRef.current || !map.getSource('ws-parcels')) return;
     const s = game.get();
     const keys = keysRef.current;
-    (map.getSource('ws-parcels') as GeoJSONSource).setData(parcelFeatures(s.chunks, keys, s.me, fallbackRef.current));
-    const buildings = keys.flatMap((k) => s.chunks.get(k)?.buildings ?? []);
+    const chunkObjs = keys.map((k) => s.chunks.get(k));
+    const persp = `${s.me?.id}|${s.me?.settlement?.id}`;
+    const last = lastSync.current;
+    // Only push new data to MapLibre when visible chunks or the viewer's perspective changed:
+    // re-uploading thousands of polygons on every wallet tick caused visible stutter.
+    const changed = persp !== last.persp || chunkObjs.length !== last.chunks.length || chunkObjs.some((c, i) => c !== last.chunks[i]);
+    if (changed) {
+      const features = chunkObjs.flatMap((c) => (c ? chunkFeatures(c, s.me, fallbackRef.current) : []));
+      (map.getSource('ws-parcels') as GeoJSONSource).setData({ type: 'FeatureCollection', features });
+    }
+    const buildings = chunkObjs.flatMap((c) => c?.buildings ?? []);
     layerRef.current?.setData({ buildings, myId: s.me?.id ?? null, mySettlementId: s.me?.settlement?.id ?? null, selectedId: s.selection?.kind === 'building' ? s.selection.id : null });
     const sel = s.selection?.kind === 'parcel' ? s.selection.id : null;
-    (map.getSource('ws-selected') as GeoJSONSource).setData({
-      type: 'FeatureCollection',
-      features: sel ? [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: parcelRing(sel) } }] : [],
-    });
+    if (sel !== last.sel) {
+      (map.getSource('ws-selected') as GeoJSONSource).setData({
+        type: 'FeatureCollection',
+        features: sel ? [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: parcelRing(sel) } }] : [],
+      });
+    }
+    lastSync.current = { chunks: chunkObjs, persp, sel };
   };
 
   const updatePlacement = (ll: [number, number]) => {
@@ -250,7 +274,7 @@ export default function WorldMap() {
     return game.subscribe(() => {
       const s = game.get();
       const map = mapRef.current;
-      if (s.chunkVersion !== prev.chunkVersion || s.selection !== prev.selection || s.me !== prev.me) syncLayers();
+      if (s.chunkVersion !== prev.chunkVersion || s.selection !== prev.selection || s.me?.id !== prev.me?.id || s.me?.settlement?.id !== prev.me?.settlement?.id) syncLayers();
       if (s.placement !== prev.placement) {
         const p = s.placement;
         const src = map?.getSource('ws-footprint') as GeoJSONSource | undefined;

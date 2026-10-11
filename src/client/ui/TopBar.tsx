@@ -13,7 +13,7 @@ export default function TopBar() {
   const connection = game.use((s) => s.connection);
   const online = game.use((s) => s.online);
   const loading = game.use((s) => s.loadingChunks > 0);
-  const inv = useApi<{ inventory: Inventory }>('/api/economy', ['inventory', 'wallet']);
+  const inv = useApi<{ inventory: Inventory }>('/api/inventory', ['inventory']);
   const lo = xpForLevel(me.level);
   const hi = xpForLevel(me.level + 1);
   const pct = Math.min(100, Math.round(((me.xp - lo) / (hi - lo)) * 100));

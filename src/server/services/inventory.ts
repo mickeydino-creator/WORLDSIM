@@ -6,18 +6,28 @@ import { fail } from '../errors';
 
 export type ResourceMap = Partial<Record<ResourceId, number>>;
 
-/** Storage capacity per resource: base + storage buildings, scaled by research/specialization. */
-export async function storageCapacity(db: Db, userId: string): Promise<number> {
-  const b = await db.query<{ type: string; level: number }>('SELECT type, level FROM buildings WHERE owner_user_id = $1', [userId]);
-  let extra = 0;
-  for (const row of b.rows) extra += (getBuildingDef(row.type)?.effects.storage ?? 0) * row.level;
-  const p = await db.query<{ specialization: string | null; techs: string[] }>(
-    `SELECT p.specialization, COALESCE(array_agg(r.tech_id) FILTER (WHERE r.tech_id IS NOT NULL), '{}') AS techs
-       FROM players p LEFT JOIN player_research r ON r.user_id = p.user_id WHERE p.user_id = $1 GROUP BY p.user_id`,
+/**
+ * Storage capacity per resource (base + storage buildings, scaled by research/specialization) and
+ * current stock, read in a single round trip.
+ */
+export async function storageInfo(db: Db, userId: string): Promise<{ capacity: number; stock: Record<string, number> }> {
+  const r = await db.query<{ specialization: string | null; techs: string[]; blds: { type: string; level: number }[] | null; stock: Record<string, number> | null }>(
+    `SELECT p.specialization,
+            COALESCE((SELECT array_agg(tech_id) FROM player_research WHERE user_id = $1), '{}') AS techs,
+            (SELECT jsonb_agg(jsonb_build_object('type', type, 'level', level)) FROM buildings WHERE owner_user_id = $1) AS blds,
+            (SELECT jsonb_object_agg(resource, quantity) FROM inventories WHERE user_id = $1) AS stock
+       FROM players p WHERE p.user_id = $1`,
     [userId],
   );
-  const m = computeModifiers(p.rows[0]?.techs ?? [], p.rows[0]?.specialization ?? null);
-  return Math.floor((BASE_STORAGE + extra) * m.storageMultiplier);
+  const row = r.rows[0];
+  let extra = 0;
+  for (const b of row?.blds ?? []) extra += (getBuildingDef(b.type)?.effects.storage ?? 0) * b.level;
+  const m = computeModifiers(row?.techs ?? [], row?.specialization ?? null);
+  return { capacity: Math.floor((BASE_STORAGE + extra) * m.storageMultiplier), stock: row?.stock ?? {} };
+}
+
+export async function storageCapacity(db: Db, userId: string): Promise<number> {
+  return (await storageInfo(db, userId)).capacity;
 }
 
 export async function getInventory(db: Db, userId: string) {

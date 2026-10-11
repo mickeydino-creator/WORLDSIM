@@ -3,9 +3,8 @@ import { LAND_CLASSES, NEIGHBOR_RADIUS_M, landPrice, type LandClass } from '@/sh
 import { XP } from '@/shared/config/progression';
 import type { Db, Tx } from '../db';
 import { fail } from '../errors';
-import { notifyUser, publish } from '../events';
+import { notifyUser, publish, publishFromQuery } from '../events';
 import { getBuildingDef } from '@/shared/config/buildings';
-import { buildingSummary } from './buildings';
 import { playerAccountId, systemAccountId, transfer } from '../ledger';
 import { addXp, checkAchievements, maxParcelsForLevel, publishWallet } from './players';
 
@@ -13,10 +12,15 @@ import { addXp, checkAchievements, maxParcelsForLevel, publishWallet } from './p
 // Land survey: classify every grid cell of a chunk from real geography (Natural Earth).
 // ---------------------------------------------------------------------------
 
+// The geography version only changes when geography is re-imported; cache it briefly per process.
+let geoVersionCache: { value: number; at: number } | null = null;
+
 async function geoVersion(db: Db): Promise<number> {
+  if (geoVersionCache && Date.now() - geoVersionCache.at < 30_000) return geoVersionCache.value;
   const r = await db.query<{ value: number }>("SELECT value FROM system_status WHERE key = 'geo_version'");
   if (!r.rows[0]) fail('unavailable', 'World geography has not been imported (run npm run geo:import)');
-  return Number(r.rows[0].value);
+  geoVersionCache = { value: Number(r.rows[0].value), at: Date.now() };
+  return geoVersionCache.value;
 }
 
 // Concurrent requests for the same uncached chunk share one computation (per process).
@@ -269,6 +273,24 @@ export async function lockParcel(tx: Tx, parcelId: string, landClass?: LandClass
   return r.rows[0] ?? null;
 }
 
+const PARCEL_PAYLOAD_SQL = `
+  SELECT p.id, p.chunk_key, p.name, p.owner_user_id AS "ownerId", u.display_name AS "ownerName", p.settlement_id AS "settlementId",
+         s.name AS "settlementName", l.price AS "listingPrice"
+    FROM parcels p LEFT JOIN users u ON u.id = p.owner_user_id LEFT JOIN settlements s ON s.id = p.settlement_id
+    LEFT JOIN parcel_listings l ON l.parcel_id = p.id WHERE p.id = $2`;
+
+/** Broadcasts a parcel's current ownership to its chunk channel (one round trip). */
+export async function publishParcel(tx: Tx, parcelId: string) {
+  return publishFromQuery(tx, `'chunk:' || q.chunk_key`, 'parcel', PARCEL_PAYLOAD_SQL, [parcelId]);
+}
+
+/** Broadcasts a building's current summary to its chunk channel and returns it (one round trip). */
+export async function publishBuilding(tx: Tx, buildingId: string): Promise<BuildingSummary> {
+  const r = await publishFromQuery<{ building: BuildingSummary }>(tx, `'chunk:' || q.chunk_key`, 'building', `${BUILDING_SUMMARY_SQL} WHERE b.id = $2`, [buildingId], 'building');
+  if (!r) fail('not_found', 'Building not found');
+  return r!.building;
+}
+
 export async function parcelEventPayload(tx: Db, parcelId: string) {
   const r = await tx.query(
     `SELECT p.id, p.name, p.owner_user_id AS "ownerId", u.display_name AS "ownerName", p.settlement_id AS "settlementId", s.name AS "settlementName",
@@ -314,15 +336,16 @@ export async function purchaseParcel(tx: Tx, userId: string, parcelId: string, o
     refs: { actorUserId: userId, parcelId },
     insufficientMessage: 'Insufficient funds to purchase this parcel',
   });
-  await tx.query('UPDATE parcels SET owner_user_id = $2, last_price = $3, name = $4, updated_at = now() WHERE id = $1', [parcelId, userId, price, name]);
+  const [hx, hy] = parcelCenter(parcelId);
   await tx.query(
-    "INSERT INTO parcel_ownership_history (parcel_id, to_user_id, price, reason, ledger_entry_id) VALUES ($1,$2,$3,'purchase',$4)",
-    [parcelId, userId, price, entryId],
+    `WITH own AS (UPDATE parcels SET owner_user_id = $2, last_price = $3, name = $4, updated_at = now() WHERE id = $1),
+          home AS (UPDATE players SET home_lng = COALESCE(home_lng, $6), home_lat = COALESCE(home_lat, $7) WHERE user_id = $2)
+     INSERT INTO parcel_ownership_history (parcel_id, to_user_id, price, reason, ledger_entry_id) VALUES ($1,$2,$3,'purchase',$5)`,
+    [parcelId, userId, price, name, entryId, hx, hy],
   );
-  await tx.query('UPDATE players SET home_lng = COALESCE(home_lng, $2), home_lat = COALESCE(home_lat, $3) WHERE user_id = $1', [userId, ...parcelCenter(parcelId)]);
   await addXp(tx, userId, XP.parcelPurchase);
   await checkAchievements(tx, userId, ['parcels']);
-  await publish(tx, `chunk:${parcel!.chunk_key}`, 'parcel', (await parcelEventPayload(tx, parcelId)) as Record<string, unknown>);
+  await publishParcel(tx, parcelId);
   await publishWallet(tx, userId);
   return { parcelId, price, landClass, name };
 }
@@ -370,7 +393,7 @@ export async function renameParcel(tx: Tx, userId: string, parcelId: string, nam
   const p = await lockParcel(tx, parcelId);
   if (!p || p.owner_user_id !== userId) fail('forbidden', 'You can only rename land you own');
   await tx.query('UPDATE parcels SET name = $2, updated_at = now() WHERE id = $1', [parcelId, n]);
-  await publish(tx, `chunk:${p!.chunk_key}`, 'parcel', (await parcelEventPayload(tx, parcelId)) as Record<string, unknown>);
+  await publishParcel(tx, parcelId);
   return { parcelId, name: n };
 }
 
@@ -407,7 +430,7 @@ export async function sellToLandOffice(tx: Tx, userId: string, parcelId: string,
   await tx.query('UPDATE parcels SET owner_user_id = NULL, name = NULL, updated_at = now() WHERE id = $1', [parcelId]);
   await tx.query("INSERT INTO parcel_ownership_history (parcel_id, from_user_id, price, reason, ledger_entry_id) VALUES ($1,$2,$3,'sold_to_land_office',$4)", [parcelId, userId, q.total, entry]);
   for (const b of removed.rows) await publish(tx, `chunk:${p!.chunk_key}`, 'building_removed', { id: b.id, parcelId });
-  await publish(tx, `chunk:${p!.chunk_key}`, 'parcel', (await parcelEventPayload(tx, parcelId)) as Record<string, unknown>);
+  await publishParcel(tx, parcelId);
   await publishWallet(tx, userId);
   await publish(tx, `user:${userId}`, 'player', {});
   return { parcelId, received: q.total, land: q.land, buildings: q.buildings, removedBuildings: removed.rowCount };
@@ -422,7 +445,7 @@ export async function listParcel(tx: Tx, userId: string, parcelId: string, price
      ON CONFLICT (parcel_id) DO UPDATE SET price = excluded.price, seller_user_id = excluded.seller_user_id, created_at = now()`,
     [parcelId, userId, price],
   );
-  await publish(tx, `chunk:${p!.chunk_key}`, 'parcel', (await parcelEventPayload(tx, parcelId)) as Record<string, unknown>);
+  await publishParcel(tx, parcelId);
   await publish(tx, 'global', 'listings', {});
   return { parcelId, price };
 }
@@ -432,7 +455,7 @@ export async function cancelListing(tx: Tx, userId: string, parcelId: string) {
   if (!p || p.owner_user_id !== userId) fail('forbidden', 'You can only manage listings for land you own');
   const r = await tx.query('DELETE FROM parcel_listings WHERE parcel_id = $1', [parcelId]);
   if (r.rowCount === 0) fail('conflict', 'This parcel is not listed for sale');
-  await publish(tx, `chunk:${p!.chunk_key}`, 'parcel', (await parcelEventPayload(tx, parcelId)) as Record<string, unknown>);
+  await publishParcel(tx, parcelId);
   await publish(tx, 'global', 'listings', {});
   return { parcelId, listed: false };
 }
@@ -473,10 +496,9 @@ export async function buyListedParcel(tx: Tx, buyerId: string, parcelId: string,
   await checkAchievements(tx, buyerId, ['parcels']);
   await notifyUser(tx, seller, 'land_sold', 'Your land was sold', `You received ${listing!.price - fee} minor units after a ${fee} fee.`, { parcelId });
   for (const b of blds.rows) {
-    const s = await buildingSummary(tx, b.id);
-    await publish(tx, `chunk:${s.chunkKey}`, 'building', { building: s.building });
+    await publishBuilding(tx, b.id);
   }
-  await publish(tx, `chunk:${p!.chunk_key}`, 'parcel', (await parcelEventPayload(tx, parcelId)) as Record<string, unknown>);
+  await publishParcel(tx, parcelId);
   await publish(tx, 'global', 'listings', {});
   for (const u of [buyerId, seller]) {
     await publishWallet(tx, u);

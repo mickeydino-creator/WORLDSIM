@@ -54,13 +54,35 @@ export interface SessionUser {
   sessionId: string;
 }
 
+// Valid sessions are cached for a few seconds per process to save a database round trip on every
+// request. Logout, password changes and "sign out other devices" invalidate the cache immediately.
+const SESSION_CACHE_MS = 15_000;
+const sessionCache = new Map<string, { user: SessionUser; at: number }>();
+
+export function invalidateSessions(userId?: string) {
+  if (!userId) return sessionCache.clear();
+  for (const [k, v] of sessionCache) if (v.user.id === userId) sessionCache.delete(k);
+}
+
 export async function userForToken(token: string | undefined | null): Promise<SessionUser | null> {
   if (!token || token.length > 100) return null;
+  const key = hashToken(token);
+  const hit = sessionCache.get(key);
+  if (hit && Date.now() - hit.at < SESSION_CACHE_MS) return hit.user;
+  const user = await lookupSession(key);
+  if (user) {
+    if (sessionCache.size > 50_000) sessionCache.clear();
+    sessionCache.set(key, { user, at: Date.now() });
+  } else sessionCache.delete(key);
+  return user;
+}
+
+async function lookupSession(tokenHash: string): Promise<SessionUser | null> {
   const r = await getPool().query<{ id: string; username: string; display_name: string; is_admin: boolean; session_id: string; last_seen_at: Date }>(
     `SELECT u.id, u.username, u.display_name, u.is_admin, s.id AS session_id, s.last_seen_at
        FROM sessions s JOIN users u ON u.id = s.user_id
       WHERE s.token_hash = $1 AND s.expires_at > now()`,
-    [hashToken(token)],
+    [tokenHash],
   );
   const row = r.rows[0];
   if (!row) return null;
@@ -71,6 +93,7 @@ export async function userForToken(token: string | undefined | null): Promise<Se
 }
 
 export async function destroySession(token: string) {
+  sessionCache.delete(hashToken(token));
   await getPool().query('DELETE FROM sessions WHERE token_hash = $1', [hashToken(token)]);
 }
 

@@ -9,8 +9,8 @@ import { fail } from '../errors';
 import { publish } from '../events';
 import { playerAccountId, settlementAccountId, systemAccountId, transfer } from '../ledger';
 import { removeResources, type ResourceMap } from './inventory';
-import { BUILDING_SUMMARY_SQL, lockParcel, type BuildingSummary } from './land';
-import { addXp, checkAchievements, getModifiers, ownedBuildingCounts, publishWallet, unlockedTechs } from './players';
+import { BUILDING_SUMMARY_SQL, lockParcel, publishBuilding, type BuildingSummary } from './land';
+import { addXp, checkAchievements, getModifiers, playerContext, publishWallet } from './players';
 
 export interface PlacementInput {
   type: string;
@@ -75,16 +75,15 @@ export async function placeBuilding(tx: Tx, userId: string, input: PlacementInpu
   if (!LAND_CLASSES[p.land_class].purchasable) fail('restricted', 'Construction is not permitted here');
   if (req.landClasses && !req.landClasses.includes(p.land_class)) fail('requirements_not_met', `${d.name} cannot be built on ${LAND_CLASSES[p.land_class].name.toLowerCase()}`);
   if (req.settlementLandOnly && !ownerSettlementId) fail('requirements_not_met', `${d.name} can only be built on settlement land`);
-  if (!project) {
-    const pl = await tx.query<{ level: number }>('SELECT level FROM players WHERE user_id = $1', [userId]);
-    if (req.minLevel && pl.rows[0].level < req.minLevel) fail('requirements_not_met', `Requires player level ${req.minLevel}`);
+  const ctx = project ? null : await playerContext(tx, userId);
+  if (ctx) {
+    if (req.minLevel && ctx.level < req.minLevel) fail('requirements_not_met', `Requires player level ${req.minLevel}`);
     if (req.research?.length) {
-      const techs = await unlockedTechs(tx, userId);
-      const missing = req.research.filter((t) => !techs.has(t));
+      const missing = req.research.filter((t) => !ctx.techs.has(t));
       if (missing.length) fail('requirements_not_met', `Requires research: ${missing.join(', ')}`);
     }
     if (req.requiresOwned?.length) {
-      const counts = await ownedBuildingCounts(tx, userId);
+      const counts = ctx.ownedCounts;
       const missing = req.requiresOwned.filter((t) => !counts[t]);
       if (missing.length) fail('requirements_not_met', `Requires owning: ${missing.map((t) => getBuildingDef(t)?.name ?? t).join(', ')}`);
     }
@@ -109,9 +108,8 @@ export async function placeBuilding(tx: Tx, userId: string, input: PlacementInpu
 
   // --- payment (project buildings are pre-funded by contributions) -------
   let cost = 0;
-  if (!project) {
-    const mods = await getModifiers(tx, userId);
-    cost = scaledCost(d, mods.buildCostMultiplier);
+  if (ctx) {
+    cost = scaledCost(d, ctx.modifiers.buildCostMultiplier);
     await removeResources(tx, userId, d.resources);
   }
 
@@ -141,9 +139,8 @@ export async function placeBuilding(tx: Tx, userId: string, input: PlacementInpu
     await publishWallet(tx, userId);
     await publish(tx, `user:${userId}`, 'inventory', {});
   }
-  const summary = await buildingSummary(tx, buildingId);
-  await publish(tx, `chunk:${summary.chunkKey}`, 'building', { building: summary.building });
-  return { building: summary.building, cost };
+  const building = await publishBuilding(tx, buildingId);
+  return { building, cost };
 }
 
 export async function buildingSummary(db: Db, buildingId: string): Promise<{ building: BuildingSummary; chunkKey: string }> {
@@ -210,9 +207,8 @@ export async function upgradeBuilding(tx: Tx, userId: string, buildingId: string
   await addXp(tx, userId, XP.buildBase);
   await publishWallet(tx, userId);
   await publish(tx, `user:${userId}`, 'inventory', {});
-  const s = await buildingSummary(tx, buildingId);
-  await publish(tx, `chunk:${s.chunkKey}`, 'building', { building: s.building });
-  return { building: s.building, cost: finalCost, resources };
+  const building = await publishBuilding(tx, buildingId);
+  return { building, cost: finalCost, resources };
 }
 
 export async function demolishBuilding(tx: Tx, userId: string, buildingId: string, opKey: string) {

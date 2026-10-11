@@ -29,6 +29,19 @@ automatically on first start.
 `APP_ORIGIN` is set automatically from Render's `RENDER_EXTERNAL_URL`. If you add a custom domain, set
 `APP_ORIGIN=https://your.domain` in the service's environment.
 
+## Performance: put Render and Supabase in the same region
+
+Every game action runs about 15-20 database queries in sequence, so the network round trip between
+Render and Supabase dominates action latency. Same region: ~1-5 ms per round trip (actions feel
+instant). Different continents: 100-150 ms per round trip (2-3 s per action).
+
+- Check it: open `https://<your-service>.onrender.com/api/health` and look at `dbRoundTripMs`.
+  Under ~10 is good; above ~40 means the two are far apart.
+- Render free regions: Oregon, Ohio, Virginia, Frankfurt, Singapore. For players in Europe or the
+  Middle East use **Frankfurt** on Render and **Central EU (Frankfurt), eu-central-1** on Supabase.
+- Neither service can move an existing project to another region. Create the new one in the right
+  region and update `DATABASE_URL` (a new Supabase project starts empty; the app sets itself up).
+
 ## What the free tiers mean in practice
 
 - **Render free web services sleep after ~15 minutes without traffic** and take ~30-60 s to wake on the

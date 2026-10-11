@@ -3,11 +3,12 @@ import { RP_PER_RUN, getRecipe, type RecipeDef } from '@/shared/config/recipes';
 import type { ResourceId } from '@/shared/config/resources';
 import type { Tx } from '../db';
 import { fail, GameError } from '../errors';
-import { notifyUser, publish } from '../events';
+import { notifyUser, publish, publishFromQuery } from '../events';
 import { enqueue } from '../jobs';
 import { playerAccountId, systemAccountId, transfer } from '../ledger';
-import { addResources, removeResources, storageCapacity, type ResourceMap } from './inventory';
-import { buildingSummary, lockBuilding } from './buildings';
+import { addResources, removeResources, storageInfo, type ResourceMap } from './inventory';
+import { lockBuilding } from './buildings';
+import { BUILDING_SUMMARY_SQL, publishBuilding } from './land';
 import { addXp, checkAchievements, getModifiers, publishWallet, unlockedTechs } from './players';
 
 export interface RunPlan {
@@ -49,10 +50,9 @@ export async function startProduction(tx: Tx, userId: string, buildingId: string
   const plan = await planRun(tx, userId, b.type, b.level, recipeId);
 
   // Ensure there is room for the output before committing inputs.
-  const cap = await storageCapacity(tx, userId);
+  const { capacity: cap, stock } = await storageInfo(tx, userId);
   for (const [res, q] of Object.entries(plan.outputs)) {
-    const cur = await tx.query<{ quantity: number }>('SELECT quantity FROM inventories WHERE user_id = $1 AND resource = $2', [userId, res]);
-    if ((cur.rows[0]?.quantity ?? 0) + (q ?? 0) > cap) fail('storage_full', `Not enough storage for ${q} ${res}. Build or upgrade a warehouse, or sell stock.`);
+    if ((stock[res] ?? 0) + (q ?? 0) > cap) fail('storage_full', `Not enough storage for ${q} ${res}. Build or upgrade a warehouse, or sell stock.`);
   }
 
   await removeResources(tx, userId, plan.inputs);
@@ -76,10 +76,8 @@ export async function startProduction(tx: Tx, userId: string, buildingId: string
   await tx.query("UPDATE buildings SET status = 'producing', recipe_id = $2, auto_repeat = $3, updated_at = now() WHERE id = $1", [buildingId, recipeId, autoRepeat]);
   await enqueue(tx, 'production.complete', { runId }, { runAt: run.rows[0].completes_at, dedupeKey: `production:${runId}` });
   await publishWallet(tx, userId);
-  await publish(tx, `user:${userId}`, 'inventory', {});
   await publish(tx, `user:${userId}`, 'production', { buildingId, runId, status: 'running', completesAt: run.rows[0].completes_at });
-  const s = await buildingSummary(tx, buildingId);
-  await publish(tx, `chunk:${s.chunkKey}`, 'building', { building: s.building });
+  await publishBuilding(tx, buildingId);
   return { runId, completesAt: run.rows[0].completes_at, plan: { inputs: plan.inputs, outputs: plan.outputs, currencyOut: plan.currencyOut, durationSec: plan.durationSec } };
 }
 
@@ -132,8 +130,7 @@ export async function completeProduction(tx: Tx, runId: string): Promise<'comple
     }
   }
   if (!repeated) {
-    const s = await buildingSummary(tx, run.building_id).catch(() => null);
-    if (s) await publish(tx, `chunk:${s.chunkKey}`, 'building', { building: s.building });
+    await publishFromQuery(tx, `'chunk:' || q.chunk_key`, 'building', `${BUILDING_SUMMARY_SQL} WHERE b.id = $2`, [run.building_id], 'building');
   }
   const body = lost.length ? `Storage full: ${lost.map(([res, q]) => `${(q ?? 0) - (delivered[res as ResourceId] ?? 0)} ${res}`).join(', ')} discarded.` : '';
   await publish(tx, `user:${userId}`, 'production', { buildingId: run.building_id, runId, status: 'completed', delivered, currencyOut: run.currency_out });
@@ -153,8 +150,7 @@ export async function cancelProduction(tx: Tx, userId: string, buildingId: strin
   await addResources(tx, userId, r.rows[0].inputs, { ignoreCapacity: true });
   await tx.query("UPDATE buildings SET status = 'idle', auto_repeat = false, updated_at = now() WHERE id = $1", [buildingId]);
   await publish(tx, `user:${userId}`, 'inventory', {});
-  const s = await buildingSummary(tx, buildingId);
-  await publish(tx, `chunk:${s.chunkKey}`, 'building', { building: s.building });
+  await publishBuilding(tx, buildingId);
   return { runId: r.rows[0].id, refunded: r.rows[0].inputs };
 }
 

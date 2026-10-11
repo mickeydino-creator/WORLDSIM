@@ -14,7 +14,7 @@ import { enqueue } from '../jobs';
 import { playerAccountId, settlementAccountId, systemAccountId, transfer } from '../ledger';
 import { addResources, removeResources, type ResourceMap } from './inventory';
 import { buildingSummary, placeBuilding } from './buildings';
-import { lockParcel, parcelEventPayload } from './land';
+import { lockParcel, publishBuilding, publishParcel } from './land';
 import { addXp, checkAchievements, publishWallet } from './players';
 
 const MAX_SETTLEMENT_PARCELS = 60;
@@ -114,9 +114,7 @@ async function moveParcelToSettlement(tx: Tx, parcelId: string, fromUserId: stri
     'INSERT INTO parcel_ownership_history (parcel_id, from_user_id, to_settlement_id, price, reason, ledger_entry_id) VALUES ($1,$2,$3,$4,$5,$6)',
     [parcelId, fromUserId, settlementId, price, reason, ledgerEntryId],
   );
-  const payload = await parcelEventPayload(tx, parcelId);
-  const ck = await tx.query<{ chunk_key: string }>('SELECT chunk_key FROM parcels WHERE id = $1', [parcelId]);
-  await publish(tx, `chunk:${ck.rows[0].chunk_key}`, 'parcel', payload as Record<string, unknown>);
+  await publishParcel(tx, parcelId);
 }
 
 export async function listSettlements(db: Db, near?: { lng: number; lat: number }) {
@@ -503,8 +501,7 @@ async function tryCompleteProject(tx: Tx, projectId: string): Promise<boolean> {
     await tx.query("UPDATE settlement_projects SET status = 'completed', completed_at = now(), result_building_id = $2, status_note = NULL WHERE id = $1", [projectId, buildingId]);
     await tx.query('RELEASE SAVEPOINT complete_project');
     if (pt.upgradeExisting) {
-      const s = await buildingSummary(tx, buildingId);
-      await publish(tx, `chunk:${s.chunkKey}`, 'building', { building: s.building });
+      await publishBuilding(tx, buildingId);
     }
     await activity(tx, pr.settlement_id, null, 'project_completed', { projectId, name: pr.name, buildingId });
     await notifyMembers(tx, pr.settlement_id, 'settlement_project', `Project completed: ${pr.name}`);
@@ -589,12 +586,11 @@ export async function dissolveSettlement(tx: Tx, actorId: string, settlementId: 
   );
   for (const p of parcels.rows) {
     await tx.query("INSERT INTO parcel_ownership_history (parcel_id, to_user_id, reason) VALUES ($1,$2,'settlement_dissolved')", [p.id, actorId]);
-    await publish(tx, `chunk:${p.chunk_key}`, 'parcel', (await parcelEventPayload(tx, p.id)) as Record<string, unknown>);
+    await publishParcel(tx, p.id);
   }
   const blds = await tx.query<{ id: string }>('UPDATE buildings SET owner_user_id = $2, settlement_id = NULL, updated_at = now() WHERE settlement_id = $1 RETURNING id', [settlementId, actorId]);
   for (const b of blds.rows) {
-    const bs = await buildingSummary(tx, b.id);
-    await publish(tx, `chunk:${bs.chunkKey}`, 'building', { building: bs.building });
+    await publishBuilding(tx, b.id);
   }
 
   await activity(tx, settlementId, actorId, 'dissolved', { name: s.name });

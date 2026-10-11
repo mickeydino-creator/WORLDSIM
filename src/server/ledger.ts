@@ -16,22 +16,38 @@ export interface LedgerRefs {
   productionRunId?: string | null;
 }
 
+// Account ids never change once created, so lookups are cached per process. This removes one
+// database round trip per lookup (several per action).
+const accountIdCache = new Map<string, string>();
+
+async function cachedAccountId(tx: Tx, key: string, sql: string, param: string): Promise<string | null> {
+  const hit = accountIdCache.get(key);
+  if (hit) return hit;
+  const r = await tx.query<{ id: string }>(sql, [param]);
+  const id = r.rows[0]?.id ?? null;
+  if (id) {
+    if (accountIdCache.size > 100_000) accountIdCache.clear();
+    accountIdCache.set(key, id);
+  }
+  return id;
+}
+
 export async function systemAccountId(tx: Tx, code: SystemAccount): Promise<string> {
-  const r = await tx.query<{ id: string }>('SELECT id FROM accounts WHERE system_code = $1', [code]);
-  if (!r.rows[0]) throw new Error(`system account ${code} missing`);
-  return r.rows[0].id;
+  const id = await cachedAccountId(tx, `sys:${code}`, 'SELECT id FROM accounts WHERE system_code = $1', code);
+  if (!id) throw new Error(`system account ${code} missing`);
+  return id;
 }
 
 export async function playerAccountId(tx: Tx, userId: string): Promise<string> {
-  const r = await tx.query<{ id: string }>('SELECT id FROM accounts WHERE user_id = $1', [userId]);
-  if (!r.rows[0]) fail('not_found', 'Wallet not found');
-  return r.rows[0].id;
+  const id = await cachedAccountId(tx, `user:${userId}`, 'SELECT id FROM accounts WHERE user_id = $1', userId);
+  if (!id) fail('not_found', 'Wallet not found');
+  return id!;
 }
 
 export async function settlementAccountId(tx: Tx, settlementId: string): Promise<string> {
-  const r = await tx.query<{ id: string }>('SELECT id FROM accounts WHERE settlement_id = $1', [settlementId]);
-  if (!r.rows[0]) fail('not_found', 'Treasury not found');
-  return r.rows[0].id;
+  const id = await cachedAccountId(tx, `settlement:${settlementId}`, 'SELECT id FROM accounts WHERE settlement_id = $1', settlementId);
+  if (!id) fail('not_found', 'Treasury not found');
+  return id!;
 }
 
 export async function balanceOf(tx: Tx, accountId: string): Promise<number> {
@@ -68,11 +84,12 @@ export async function transfer(tx: Tx, t: TransferInput): Promise<number> {
   if (!src.allow_negative && src.balance < t.amount) {
     fail('insufficient_funds', t.insufficientMessage ?? 'Insufficient funds', { required: t.amount, available: src.balance });
   }
-  await tx.query('UPDATE accounts SET balance = balance - $2, updated_at = now() WHERE id = $1', [t.from, t.amount]);
-  await tx.query('UPDATE accounts SET balance = balance + $2, updated_at = now() WHERE id = $1', [t.to, t.amount]);
+  // Both balance updates and the ledger entry in one statement (one round trip).
   const r = t.refs ?? {};
   const e = await tx.query<{ id: number }>(
-    `INSERT INTO ledger_entries (tx_type, from_account, to_account, amount, idempotency_key, actor_user_id,
+    `WITH debit AS (UPDATE accounts SET balance = balance - $4, updated_at = now() WHERE id = $2),
+          credit AS (UPDATE accounts SET balance = balance + $4, updated_at = now() WHERE id = $3)
+     INSERT INTO ledger_entries (tx_type, from_account, to_account, amount, idempotency_key, actor_user_id,
        parcel_id, building_id, order_id, trade_id, project_id, settlement_id, production_run_id, metadata)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
     [t.type, t.from, t.to, t.amount, t.idempotencyKey, r.actorUserId ?? null, r.parcelId ?? null, r.buildingId ?? null,

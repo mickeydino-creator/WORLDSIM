@@ -13,6 +13,15 @@ export async function GET() {
               (SELECT count(*)::int FROM jobs WHERE status = 'pending' AND run_at < now() - interval '1 minute') AS pending`,
     );
     const row = r.rows[0];
+    // Network round trip to the database: every action needs ~15-20 of these in sequence, so this
+    // should be a few ms (app and database in the same region).
+    const rtts: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const t = performance.now();
+      await getPool().query('SELECT 1');
+      rtts.push(performance.now() - t);
+    }
+    checks.dbRoundTripMs = Math.round(rtts.sort((a, b) => a - b)[1] * 10) / 10;
     checks.database = 'ok';
     checks.postgis = row.postgis;
     checks.geography = row.geo > 0 ? 'ok' : 'missing (run npm run geo:import)';

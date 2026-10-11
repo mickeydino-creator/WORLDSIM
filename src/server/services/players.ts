@@ -3,9 +3,9 @@ import { ACHIEVEMENTS, levelForXp, type AchievementDef } from '@/shared/config/p
 import { computeModifiers, type Modifiers } from '@/shared/config/research';
 import { STARTING_BALANCE, STARTING_RESEARCH_POINTS, STARTING_RESOURCES } from '@/shared/config/resources';
 import type { Db, Tx } from '../db';
-import { notifyUser, publish } from '../events';
+import { notifyUser, publishFromQuery } from '../events';
 import { fail } from '../errors';
-import { playerAccountId, systemAccountId, transfer } from '../ledger';
+import { systemAccountId, transfer } from '../ledger';
 import { addResources } from './inventory';
 
 export async function createPlayer(tx: Tx, userId: string) {
@@ -50,29 +50,33 @@ export async function addXp(tx: Tx, userId: string, amount: number) {
   }
 }
 
-async function metricValue(tx: Tx, userId: string, metric: AchievementDef['metric']): Promise<number> {
-  const q: Record<AchievementDef['metric'], string> = {
-    parcels: 'SELECT count(*)::int AS v FROM parcels WHERE owner_user_id = $1',
-    buildings: 'SELECT count(*)::int AS v FROM buildings WHERE built_by = $1',
-    production_runs: "SELECT count(*)::int AS v FROM production_runs WHERE owner_user_id = $1 AND status = 'completed'",
-    trades: 'SELECT count(*)::int AS v FROM trades WHERE buyer_user_id = $1 OR seller_user_id = $1',
-    settlement_founded: 'SELECT count(*)::int AS v FROM settlements WHERE founder_user_id = $1',
-    contributed_credits: "SELECT COALESCE(sum(amount),0)::bigint AS v FROM project_contributions WHERE user_id = $1 AND kind = 'currency' AND source = 'player'",
-    techs: 'SELECT count(*)::int AS v FROM player_research WHERE user_id = $1',
-  };
-  const r = await tx.query<{ v: number }>(q[metric], [userId]);
-  return Number(r.rows[0]?.v ?? 0);
-}
+const METRIC_SQL: Record<AchievementDef['metric'], string> = {
+  parcels: '(SELECT count(*) FROM parcels WHERE owner_user_id = $1)',
+  buildings: '(SELECT count(*) FROM buildings WHERE built_by = $1)',
+  production_runs: "(SELECT count(*) FROM production_runs WHERE owner_user_id = $1 AND status = 'completed')",
+  trades: '(SELECT count(*) FROM trades WHERE buyer_user_id = $1 OR seller_user_id = $1)',
+  settlement_founded: '(SELECT count(*) FROM settlements WHERE founder_user_id = $1)',
+  contributed_credits: "(SELECT COALESCE(sum(amount),0) FROM project_contributions WHERE user_id = $1 AND kind = 'currency' AND source = 'player')",
+  techs: '(SELECT count(*) FROM player_research WHERE user_id = $1)',
+};
 
-/** Grants any newly satisfied achievements for the given metrics. Idempotent via primary key. */
+/**
+ * Grants any newly satisfied achievements for the given metrics. Idempotent via primary key.
+ * Reads owned achievements and all needed metrics in a single query.
+ */
 export async function checkAchievements(tx: Tx, userId: string, metrics: AchievementDef['metric'][]) {
-  const have = await tx.query<{ achievement_id: string }>('SELECT achievement_id FROM player_achievements WHERE user_id = $1', [userId]);
-  const owned = new Set(have.rows.map((r) => r.achievement_id));
-  const candidates = ACHIEVEMENTS.filter((a) => metrics.includes(a.metric) && !owned.has(a.id));
-  const cache = new Map<string, number>();
-  for (const a of candidates) {
-    if (!cache.has(a.metric)) cache.set(a.metric, await metricValue(tx, userId, a.metric));
-    if ((cache.get(a.metric) ?? 0) < a.threshold) continue;
+  const relevant = ACHIEVEMENTS.filter((a) => metrics.includes(a.metric));
+  if (!relevant.length) return;
+  const uniq = [...new Set(relevant.map((a) => a.metric))];
+  const r = await tx.query<Record<string, string | number | string[]>>(
+    `SELECT COALESCE((SELECT array_agg(achievement_id) FROM player_achievements WHERE user_id = $1), '{}') AS owned,
+            ${uniq.map((m) => `${METRIC_SQL[m]}::bigint AS "${m}"`).join(', ')}`,
+    [userId],
+  );
+  const row = r.rows[0];
+  const owned = new Set(row.owned as string[]);
+  for (const a of relevant) {
+    if (owned.has(a.id) || Number(row[a.metric]) < a.threshold) continue;
     const ins = await tx.query('INSERT INTO player_achievements (user_id, achievement_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [userId, a.id]);
     if (ins.rowCount === 0) continue;
     await tx.query('UPDATE players SET research_points = research_points + $2, reputation = reputation + $3 WHERE user_id = $1', [
@@ -80,6 +84,25 @@ export async function checkAchievements(tx: Tx, userId: string, metrics: Achieve
     ]);
     await notifyUser(tx, userId, 'achievement', `Achievement unlocked: ${a.name}`, a.description, { achievementId: a.id });
   }
+}
+
+/** Everything about a player that construction/production checks need, in one round trip. */
+export async function playerContext(db: Db, userId: string) {
+  const r = await db.query<{ level: number; specialization: string | null; techs: string[]; owned: Record<string, number> | null }>(
+    `SELECT p.level, p.specialization,
+            COALESCE((SELECT array_agg(tech_id) FROM player_research WHERE user_id = $1), '{}') AS techs,
+            (SELECT jsonb_object_agg(type, n) FROM (SELECT type, count(*)::int AS n FROM buildings WHERE owner_user_id = $1 GROUP BY type) t) AS owned
+       FROM players p WHERE p.user_id = $1`,
+    [userId],
+  );
+  const row = r.rows[0];
+  if (!row) fail('not_found', 'Player not found');
+  return {
+    level: row.level,
+    techs: new Set(row.techs),
+    ownedCounts: (row.owned ?? {}) as Record<string, number>,
+    modifiers: computeModifiers(row.techs, row.specialization),
+  };
 }
 
 /** Number of buildings of each type the player owns (for "requiresOwned" requirements). */
@@ -145,9 +168,7 @@ export async function getPlayerState(db: Db, userId: string) {
 
 /** Pushes a fresh wallet balance to the player's realtime channel (after commit). */
 export async function publishWallet(tx: Tx, userId: string) {
-  const acct = await playerAccountId(tx, userId);
-  const r = await tx.query<{ balance: number }>('SELECT balance FROM accounts WHERE id = $1', [acct]);
-  await publish(tx, `user:${userId}`, 'wallet', { balance: r.rows[0].balance });
+  await publishFromQuery(tx, `'user:' || q.user_id::text`, 'wallet', 'SELECT user_id, balance FROM accounts WHERE user_id = $2', [userId]);
 }
 
 export function buildingName(type: string) {

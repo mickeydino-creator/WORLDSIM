@@ -13,8 +13,20 @@ const DETAIL_ZOOM = 15;
 const MIN_ZOOM = 13;
 const DETAIL_RADIUS_M = 2500;
 const REORIGIN_M = 3000;
+const ROT_X = new THREE.Matrix4().makeRotationX(Math.PI / 2);
 
 const geometryCache = new Map<string, THREE.BufferGeometry>();
+// Shared, never-disposed resources reused by every rebuild.
+const SHARED = {
+  box: new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0),
+  plate: new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2).translate(0, 0.08, 0),
+  marker: new THREE.OctahedronGeometry(1.6),
+  blockMaterial: new THREE.MeshLambertMaterial({ flatShading: true }),
+  plateMaterial: new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.9, depthWrite: false }),
+  markerMaterial: new THREE.MeshBasicMaterial({ color: '#f2c14e' }),
+};
+/** Rebuild detailed models only after the camera has moved this far (or LOD/origin changes). */
+const REBUILD_MOVE_M = 600;
 const materialCache = new Map<string, THREE.Material>();
 
 function roofGeometry(w: number, h: number, d: number) {
@@ -80,6 +92,9 @@ export class BuildingsLayer implements CustomLayerInterface {
   private detailed = false;
   private ghostState: { type: string; valid: boolean } | null = null;
   private dirty = true;
+  private mProj = new THREE.Matrix4();
+  private mModel = new THREE.Matrix4();
+  private vScale = new THREE.Vector3();
 
   constructor() {
     this.scene.add(this.content);
@@ -104,17 +119,29 @@ export class BuildingsLayer implements CustomLayerInterface {
     this.renderer = null;
   }
 
+  private builtAt: [number, number] | null = null;
+  private signature = '';
+
   private onMoveEnd = () => {
     if (!this.map) return;
     const detailed = this.map.getZoom() >= DETAIL_ZOOM;
-    const c = this.map.getCenter();
-    const far = !this.originLngLat || distM(this.originLngLat, [c.lng, c.lat]) > REORIGIN_M;
-    if (detailed !== this.detailed || far || detailed) this.dirty = true;
-    if (this.dirty) this.map.triggerRepaint();
+    const c: [number, number] = [this.map.getCenter().lng, this.map.getCenter().lat];
+    const far = !this.originLngLat || distM(this.originLngLat, c) > REORIGIN_M;
+    // Previously every pan at street zoom rebuilt every mesh; now only LOD changes, re-origin, or a
+    // move large enough to change which buildings get detailed models trigger a rebuild.
+    const moved = detailed && (!this.builtAt || distM(this.builtAt, c) > REBUILD_MOVE_M);
+    if (detailed !== this.detailed || far || moved) {
+      this.dirty = true;
+      this.map.triggerRepaint();
+    }
   };
 
   setData(d: LayerData) {
+    // Skip rebuilds when nothing visible changed (e.g. a wallet update re-synced the layers).
+    const sig = `${d.myId}|${d.mySettlementId}|${d.selectedId}|${d.buildings.map((b) => `${b.id}:${b.level}:${b.status}:${b.rotation}:${b.ownerId}:${b.settlementId}`).join(',')}`;
     this.data = d;
+    if (sig === this.signature) return;
+    this.signature = sig;
     this.dirty = true;
     this.map?.triggerRepaint();
   }
@@ -172,7 +199,9 @@ export class BuildingsLayer implements CustomLayerInterface {
     for (const child of [...this.content.children]) {
       this.content.remove(child);
       if (child instanceof THREE.InstancedMesh) child.dispose();
+      else if (child instanceof THREE.LineSegments) child.geometry.dispose();
     }
+    this.builtAt = center;
     const zoom = this.map.getZoom();
     this.detailed = zoom >= DETAIL_ZOOM;
     const { buildings, myId, mySettlementId, selectedId } = this.data;
@@ -212,8 +241,7 @@ export class BuildingsLayer implements CustomLayerInterface {
 
     // Simplified LOD: a single coloured block per building.
     if (simple.length) {
-      const box = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0);
-      const mesh = new THREE.InstancedMesh(box, new THREE.MeshLambertMaterial({ flatShading: true }), simple.length);
+      const mesh = new THREE.InstancedMesh(SHARED.box, SHARED.blockMaterial, simple.length);
       const color = new THREE.Color();
       simple.forEach((b, k) => {
         const def = getBuildingDef(b.type);
@@ -229,8 +257,7 @@ export class BuildingsLayer implements CustomLayerInterface {
 
     // Ownership plates: a thin footprint under every building, tinted by owner.
     if (buildings.length) {
-      const plate = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2).translate(0, 0.08, 0);
-      const mesh = new THREE.InstancedMesh(plate, new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.9, depthWrite: false }), buildings.length);
+      const mesh = new THREE.InstancedMesh(SHARED.plate, SHARED.plateMaterial, buildings.length);
       const color = new THREE.Color();
       buildings.forEach((b, k) => {
         const def = getBuildingDef(b.type);
@@ -248,8 +275,7 @@ export class BuildingsLayer implements CustomLayerInterface {
     // Activity markers above producing businesses.
     const active = buildings.filter((b) => b.status === 'producing');
     if (active.length && this.detailed) {
-      const cone = new THREE.OctahedronGeometry(1.6);
-      const mesh = new THREE.InstancedMesh(cone, new THREE.MeshBasicMaterial({ color: '#f2c14e' }), active.length);
+      const mesh = new THREE.InstancedMesh(SHARED.marker, SHARED.markerMaterial, active.length);
       active.forEach((b, k) => {
         const def = getBuildingDef(b.type)!;
         const p = this.toScene([b.lng, b.lat]);
@@ -279,12 +305,10 @@ export class BuildingsLayer implements CustomLayerInterface {
     if (this.map.getZoom() < MIN_ZOOM || args.shaderData.variantName !== 'mercator') return;
     if (this.dirty || !this.origin) this.rebuild();
     if (!this.origin) return;
-    const m = new THREE.Matrix4().fromArray(args.defaultProjectionData.mainMatrix as unknown as number[]);
-    const l = new THREE.Matrix4()
-      .makeTranslation(this.origin.x, this.origin.y, this.origin.z)
-      .scale(new THREE.Vector3(this.scale, -this.scale, this.scale))
-      .multiply(new THREE.Matrix4().makeRotationX(Math.PI / 2));
-    this.camera.projectionMatrix = m.multiply(l);
+    // Reuse matrices every frame instead of allocating new ones.
+    this.mProj.fromArray(args.defaultProjectionData.mainMatrix as unknown as number[]);
+    this.mModel.makeTranslation(this.origin.x, this.origin.y, this.origin.z).scale(this.vScale.set(this.scale, -this.scale, this.scale)).multiply(ROT_X);
+    this.camera.projectionMatrix.multiplyMatrices(this.mProj, this.mModel);
     this.renderer.resetState();
     this.renderer.render(this.scene, this.camera);
   }
